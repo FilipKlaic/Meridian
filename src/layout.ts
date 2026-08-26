@@ -1,6 +1,7 @@
 import dagre from "dagre";
 import { MarkerType, Position, type Edge, type Node } from "@xyflow/react";
 
+import type { Waypoint as Point } from "./RoutedEdge";
 import type { ProjectGraph } from "./types";
 
 export const NODE_HEIGHT = 46;
@@ -74,7 +75,16 @@ export function toFlowGraph(graph: ProjectGraph): { nodes: Node[]; edges: Edge[]
 
   const dag = new dagre.graphlib.Graph();
   dag.setDefaultEdgeLabel(() => ({}));
-  dag.setGraph({ rankdir: RANK_DIRECTION, nodesep: 22, ranksep: 110, marginx: 48, marginy: 48 });
+  dag.setGraph({
+    rankdir: RANK_DIRECTION,
+    nodesep: 22,
+    // Rank gaps double as the channels edges change lanes in, and `edgesep`
+    // keeps parallel edges from stacking on top of each other there.
+    ranksep: 120,
+    edgesep: 18,
+    marginx: 48,
+    marginy: 48,
+  });
 
   const widths = new Map<string, number>();
   for (const node of graph.nodes) {
@@ -152,17 +162,27 @@ export function toFlowGraph(graph: ProjectGraph): { nodes: Node[]; edges: Edge[]
     };
   });
 
-  const flowEdges: Edge[] = edges.map((edge) => ({
-    id: `${edge.source}->${edge.target}`,
-    source: edge.source,
-    target: edge.target,
-    // Right-angle routing: schematic rather than organic.
-    type: "step",
-    markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: "#2a5a7d" },
-    // Stroke lives in CSS so the zoom bands can thicken it as the view pulls back;
-    // an inline style here would outrank them. Focus highlighting sets one on
-    // purpose, to outrank exactly that.
-  }));
+  const flowEdges: Edge[] = edges.map((edge) => {
+    // dagre routes multi-rank edges around the boxes in between and hands back
+    // the lanes it reserved. Its first and last points sit on the node borders,
+    // which React Flow supplies more precisely from the handles, so keep only
+    // the interior ones.
+    const routed = dag.edge(edge.source, edge.target) as { points?: Point[] } | undefined;
+    const waypoints = (routed?.points ?? []).slice(1, -1);
+
+    return {
+      id: `${edge.source}->${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      // Right-angle routing: schematic rather than organic.
+      type: "routed",
+      data: { waypoints },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: "#2a5a7d" },
+      // Stroke lives in CSS so the zoom bands can thicken it as the view pulls back;
+      // an inline style here would outrank them. Focus highlighting sets one on
+      // purpose, to outrank exactly that.
+    };
+  });
 
   return { nodes: flowNodes, edges: flowEdges };
 }

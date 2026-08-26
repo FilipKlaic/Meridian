@@ -23,12 +23,14 @@ import { CanvasHud, LevelOfDetail } from "./CanvasHud";
 import CommandPalette, { type PaletteAction } from "./CommandPalette";
 import FileNode from "./FileNode";
 import Inspector from "./Inspector";
+import RoutedEdge from "./RoutedEdge";
 import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
 import { buildIndex } from "./graphIndex";
 import { toFlowGraph } from "./layout";
 import type { ProjectGraph } from "./types";
 
 const nodeTypes = { file: FileNode };
+const edgeTypes = { routed: RoutedEdge };
 
 const MIN_ZOOM = 0.05;
 /** Never zoom past 1:1 when framing, however small the project is. */
@@ -365,6 +367,7 @@ function Workspace() {
               onNodeClick={(_, node: Node) => setSelectedId(node.id)}
               onPaneClick={() => setSelectedId(null)}
               nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
               minZoom={0.05}
               proOptions={{ hideAttribution: true }}
               colorMode="dark"
