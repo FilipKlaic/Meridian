@@ -1,17 +1,20 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Background,
   BackgroundVariant,
-  Controls,
   MiniMap,
   ReactFlow,
   useEdgesState,
   useNodesState,
+  type Edge,
+  type EdgeMarker,
+  type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
+import { CanvasHud, LevelOfDetail } from "./CanvasHud";
 import FileNode from "./FileNode";
 import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
 import { toFlowGraph } from "./layout";
@@ -29,6 +32,15 @@ function describeAge(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+function Readout({ label, value }: { label: string; value: string | number }) {
+  return (
+    <span className="flex items-baseline gap-1.5">
+      <span className="text-[9px] tracking-widest text-bp-muted/60 uppercase">{label}</span>
+      <span className="tabular text-bp-text">{value}</span>
+    </span>
+  );
+}
+
 export default function App() {
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [graph, setGraph] = useState<ProjectGraph | null>(null);
@@ -36,6 +48,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   /** Set while the displayed graph came from the cache rather than a fresh scan. */
   const [cachedAt, setCachedAt] = useState<string | null>(null);
+  /** Node the pointer is over, which everything unrelated dims away from. */
+  const [focusId, setFocusId] = useState<string | null>(null);
 
   // React Flow owns node/edge state so the user can drag nodes around; we only
   // seed it whenever a different graph lands.
@@ -48,8 +62,45 @@ export default function App() {
     const laidOut = graph ? toFlowGraph(graph) : { nodes: [], edges: [] };
     setNodes(laidOut.nodes);
     setEdges(laidOut.edges);
+    setFocusId(null);
     setGraphKey((key) => key + 1);
   }, [graph, setNodes, setEdges]);
+
+  /** The focused file and everything it links to, in either direction. */
+  const neighbourhood = useMemo(() => {
+    if (!focusId) return null;
+    const related = new Set([focusId]);
+    for (const edge of edges) {
+      if (edge.source === focusId) related.add(edge.target);
+      if (edge.target === focusId) related.add(edge.source);
+    }
+    return related;
+  }, [focusId, edges]);
+
+  const displayNodes = useMemo(
+    () =>
+      neighbourhood
+        ? nodes.map((node) => ({
+            ...node,
+            className: neighbourhood.has(node.id) ? undefined : "is-dimmed",
+          }))
+        : nodes,
+    [nodes, neighbourhood],
+  );
+
+  const displayEdges = useMemo<Edge[]>(() => {
+    if (!focusId) return edges;
+    return edges.map((edge) => {
+      const attached = edge.source === focusId || edge.target === focusId;
+      if (!attached) return { ...edge, className: "is-dimmed" };
+      return {
+        ...edge,
+        style: { ...edge.style, stroke: "#38bdf8", strokeWidth: 1.6 },
+        markerEnd: { ...(edge.markerEnd as EdgeMarker), color: "#38bdf8" },
+        zIndex: 1,
+      };
+    });
+  }, [edges, focusId]);
 
   /** Show the stored graph for a project, if there is one. */
   const showCached = useCallback(async (path: string) => {
@@ -115,66 +166,107 @@ export default function App() {
   }, [projectPath]);
 
   return (
-    <div className="flex h-full flex-col bg-slate-950 text-slate-100">
-      <header className="flex flex-wrap items-center gap-3 border-b border-slate-800 px-4 py-3">
-        <h1 className="text-sm font-semibold tracking-tight">Meridian</h1>
+    <div className="flex h-full flex-col bg-bp-canvas font-mono text-bp-text">
+      {/* The traffic lights float over this bar, so it doubles as the drag region. */}
+      <header
+        data-tauri-drag-region
+        className="flex shrink-0 items-center gap-3 border-b border-bp-rule bg-bp-void/90 py-2.5 pr-4 pl-[86px]"
+      >
+        <span className="text-[11px] font-semibold tracking-[0.22em] text-bp-accent select-none">
+          MERIDIAN
+        </span>
+
+        <span className="h-4 w-px bg-bp-rule" />
 
         <button
           onClick={pickFolder}
-          className="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium hover:bg-slate-700"
+          className="border border-bp-rule px-2.5 py-1 text-[10px] tracking-widest text-bp-muted uppercase transition-colors hover:border-bp-accent hover:text-bp-accent"
         >
-          Pick folder
+          Open
         </button>
 
         <button
           onClick={scan}
           disabled={!projectPath || scanning}
-          className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
+          className="border border-bp-accent/60 bg-bp-accent/10 px-2.5 py-1 text-[10px] tracking-widest text-bp-accent uppercase transition-colors hover:bg-bp-accent/20 disabled:cursor-not-allowed disabled:border-bp-rule disabled:bg-transparent disabled:text-bp-muted/40"
         >
-          {scanning ? "Scanning…" : cachedAt ? "Rescan" : "Scan"}
+          {scanning ? "Scanning" : cachedAt ? "Rescan" : "Scan"}
         </button>
 
-        <span className="min-w-0 flex-1 truncate text-xs text-slate-400" title={projectPath ?? ""}>
-          {projectPath ?? "No folder selected"}
+        <span
+          className="min-w-0 flex-1 truncate text-[11px] text-bp-muted"
+          title={projectPath ?? ""}
+        >
+          {projectPath ?? "— no project —"}
         </span>
 
         {graph && (
-          <span className="shrink-0 text-xs text-slate-400">
-            {graph.nodes.length} files · {graph.edges.length} imports
-            {cachedAt && <> · cached {describeAge(cachedAt)}</>}
+          <span className="flex shrink-0 items-center gap-4 text-[11px]">
+            <Readout label="files" value={graph.nodes.length} />
+            <Readout label="imports" value={graph.edges.length} />
+            <Readout label="scan" value={cachedAt ? describeAge(cachedAt) : "live"} />
           </span>
         )}
       </header>
 
       {error && (
-        <div className="border-b border-red-900 bg-red-950 px-4 py-2 text-xs text-red-200">{error}</div>
+        <div className="shrink-0 border-b border-red-900/60 bg-red-950/50 px-4 py-2 text-[11px] text-red-300">
+          {error}
+        </div>
       )}
 
       <main className="min-h-0 flex-1">
         {nodes.length > 0 ? (
           <ReactFlow
             key={graphKey}
-            nodes={nodes}
-            edges={edges}
+            nodes={displayNodes}
+            edges={displayEdges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
+            onNodeMouseEnter={(_, node: Node) => setFocusId(node.id)}
+            onNodeMouseLeave={() => setFocusId(null)}
+            onPaneClick={() => setFocusId(null)}
             nodeTypes={nodeTypes}
             fitView
             minZoom={0.05}
             proOptions={{ hideAttribution: true }}
             colorMode="dark"
           >
-            <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#1e293b" />
-            <Controls showInteractive={false} />
-            <MiniMap pannable zoomable nodeColor="#64748b" maskColor="rgba(2,6,23,0.6)" />
+            {/* Fine and coarse rules together read as drafting paper. */}
+            <Background
+              id="fine"
+              variant={BackgroundVariant.Lines}
+              gap={18}
+              lineWidth={1}
+              color="rgba(56,189,248,0.045)"
+            />
+            <Background
+              id="coarse"
+              variant={BackgroundVariant.Lines}
+              gap={108}
+              lineWidth={1}
+              color="rgba(56,189,248,0.1)"
+            />
+            <LevelOfDetail />
+            <CanvasHud />
+            <MiniMap
+              pannable
+              zoomable
+              nodeColor={(node) => `hsl(${Number(node.data?.hue ?? 190)} 70% 55%)`}
+              nodeStrokeWidth={0}
+              maskColor="rgba(4,12,22,0.72)"
+            />
           </ReactFlow>
         ) : (
-          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-500">
-            {projectPath
-              ? scanning
-                ? "Scanning project…"
-                : "Click Scan to build the import graph."
-              : "Pick a TypeScript project folder to get started."}
+          <div className="bp-grid flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+            <p className="text-[11px] tracking-[0.2em] text-bp-muted uppercase">
+              {projectPath ? (scanning ? "Scanning project" : "Awaiting scan") : "No project loaded"}
+            </p>
+            <p className="text-[11px] text-bp-muted/60">
+              {projectPath
+                ? "Run a scan to chart this project's imports."
+                : "Open a TypeScript project to begin."}
+            </p>
           </div>
         )}
       </main>

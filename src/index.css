@@ -1,7 +1,169 @@
 @import "tailwindcss";
 
+@theme {
+  /* Blueprint palette: cyan instrumentation on deep navy. */
+  --color-bp-void: #040c16;
+  --color-bp-canvas: #06101c;
+  --color-bp-panel: #0d2033;
+  --color-bp-panel-hi: #123047;
+  --color-bp-rule: #16324a;
+  --color-bp-edge: #2a5a7d;
+  --color-bp-accent: #38bdf8;
+  --color-bp-accent-dim: #0e7490;
+  --color-bp-text: #d7ecfa;
+  --color-bp-muted: #6f93ad;
+
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo,
+    Consolas, monospace;
+}
+
 html,
 body,
 #root {
   height: 100%;
+}
+
+body {
+  background: var(--color-bp-canvas);
+  /* Instrument panels read better without font smoothing turned up. */
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Readouts should not jitter as digits change. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The same drafting rules React Flow paints on the canvas, for the states that
+   render before a graph exists. */
+.bp-grid {
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.1) 1px, transparent 1px),
+    linear-gradient(rgba(56, 189, 248, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.045) 1px, transparent 1px);
+  background-size:
+    108px 108px,
+    108px 108px,
+    18px 18px,
+    18px 18px;
+}
+
+/* ---------------------------------------------------------------- nodes -- */
+
+.bp-node {
+  --edge: hsl(var(--hue) 70% 60%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--edge) 12%, var(--color-bp-panel)) 0%,
+    var(--color-bp-panel) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--edge) 38%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--edge) 22%, transparent),
+    0 6px 16px -8px #000;
+}
+
+.bp-node.is-selected {
+  border-color: var(--color-bp-accent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--color-bp-accent) 40%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--color-bp-accent) 35%, transparent),
+    0 0 22px -4px color-mix(in srgb, var(--color-bp-accent) 55%, transparent);
+}
+
+/* Corner ticks: the detail that reads as "technical drawing". */
+.bp-corner {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-color: var(--edge);
+  opacity: 0.9;
+  pointer-events: none;
+}
+.bp-corner-tl {
+  top: -1px;
+  left: -1px;
+  border-top: 1px solid;
+  border-left: 1px solid;
+}
+.bp-corner-tr {
+  top: -1px;
+  right: -1px;
+  border-top: 1px solid;
+  border-right: 1px solid;
+}
+.bp-corner-bl {
+  bottom: -1px;
+  left: -1px;
+  border-bottom: 1px solid;
+  border-left: 1px solid;
+}
+.bp-corner-br {
+  bottom: -1px;
+  right: -1px;
+  border-bottom: 1px solid;
+  border-right: 1px solid;
+}
+
+/* ------------------------------------------------- level of detail -------- */
+/* Labels turn to mush when zoomed out, so drop them by zoom band instead. */
+
+.lod-medium .node-detail {
+  display: none;
+}
+.lod-far .node-detail,
+.lod-far .node-name,
+.lod-far .bp-corner {
+  display: none;
+}
+.lod-far .bp-node {
+  background: var(--edge);
+  opacity: 0.85;
+}
+
+/* Strokes are scaled by the viewport transform, so a 1px edge all but vanishes
+   once zoomed out. Thicken it to hold the structure together. */
+.react-flow__edge .react-flow__edge-path {
+  stroke: var(--color-bp-edge);
+  stroke-width: 1;
+}
+.lod-medium .react-flow__edge .react-flow__edge-path {
+  stroke-width: 1.8;
+}
+.lod-far .react-flow__edge .react-flow__edge-path {
+  stroke-width: 3.2;
+}
+
+/* ------------------------------------------------------- focus mode ------- */
+
+.react-flow__node,
+.react-flow__edge {
+  transition: opacity 140ms ease;
+}
+.react-flow__node.is-dimmed {
+  opacity: 0.2;
+}
+.react-flow__edge.is-dimmed {
+  opacity: 0.08;
+}
+
+/* --------------------------------------------------- react flow chrome ---- */
+
+.react-flow__handle {
+  border: 0;
+  min-width: 0;
+  min-height: 0;
+  width: 3px;
+  height: 3px;
+  background: var(--color-bp-edge);
+}
+
+.react-flow__minimap {
+  background: color-mix(in srgb, var(--color-bp-void) 88%, transparent);
+  border: 1px solid var(--color-bp-rule);
+}
+
+.react-flow__attribution {
+  display: none;
 }
