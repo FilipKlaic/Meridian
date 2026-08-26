@@ -13,22 +13,35 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import FileNode from "./FileNode";
+import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
 import { toFlowGraph } from "./layout";
 import type { ProjectGraph } from "./types";
 
 const nodeTypes = { file: FileNode };
+
+/** Short, human-readable age of a cached scan. */
+function describeAge(iso: string): string {
+  const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (!Number.isFinite(minutes) || minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 export default function App() {
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [graph, setGraph] = useState<ProjectGraph | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Set while the displayed graph came from the cache rather than a fresh scan. */
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
 
-  // React Flow owns node/edge state so it can record measured sizes and let the
-  // user drag nodes around; we only seed it whenever a fresh scan lands.
+  // React Flow owns node/edge state so the user can drag nodes around; we only
+  // seed it whenever a different graph lands.
   const [nodes, setNodes, onNodesChange] = useNodesState([] as ReturnType<typeof toFlowGraph>["nodes"]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as ReturnType<typeof toFlowGraph>["edges"]);
-  // Bumped per scan so React Flow remounts and re-runs `fitView` on the new layout.
+  // Bumped per graph so React Flow remounts and re-runs `fitView` on the new layout.
   const [graphKey, setGraphKey] = useState(0);
 
   useEffect(() => {
@@ -38,30 +51,64 @@ export default function App() {
     setGraphKey((key) => key + 1);
   }, [graph, setNodes, setEdges]);
 
+  /** Show the stored graph for a project, if there is one. */
+  const showCached = useCallback(async (path: string) => {
+    const cached = await loadCachedScan(path);
+    setGraph(cached?.graph ?? null);
+    setCachedAt(cached?.scannedAt ?? null);
+  }, []);
+
+  // Reopen whatever project was last in use, with its graph, so a relaunch does
+  // not need a rescan.
+  useEffect(() => {
+    (async () => {
+      try {
+        const last = await loadLastProject();
+        if (!last) return;
+        setProjectPath(last);
+        await showCached(last);
+      } catch (err) {
+        setError(`Could not read the scan cache: ${err}`);
+      }
+    })();
+  }, [showCached]);
+
   const pickFolder = useCallback(async () => {
     setError(null);
     try {
       const selected = await open({ directory: true, multiple: false });
-      if (typeof selected === "string") {
-        setProjectPath(selected);
-        // The old graph belongs to the old folder; drop it rather than show it
-        // under a path it did not come from.
-        setGraph(null);
-      }
+      if (typeof selected !== "string") return;
+
+      setProjectPath(selected);
+      // The old graph belongs to the old folder; drop it rather than show it
+      // under a path it did not come from.
+      setGraph(null);
+      setCachedAt(null);
+      await saveLastProject(selected);
+      await showCached(selected);
     } catch (err) {
       setError(String(err));
     }
-  }, []);
+  }, [showCached]);
 
   const scan = useCallback(async () => {
     if (!projectPath) return;
     setScanning(true);
     setError(null);
     try {
-      setGraph(await invoke<ProjectGraph>("scan_project", { path: projectPath }));
+      const scanned = await invoke<ProjectGraph>("scan_project", { path: projectPath });
+      setGraph(scanned);
+      setCachedAt(null);
+      // A failed write should not throw away a scan the user is already looking at.
+      try {
+        await saveScan(projectPath, scanned);
+      } catch (err) {
+        setError(`Scan finished but could not be cached: ${err}`);
+      }
     } catch (err) {
       setError(String(err));
       setGraph(null);
+      setCachedAt(null);
     } finally {
       setScanning(false);
     }
@@ -84,7 +131,7 @@ export default function App() {
           disabled={!projectPath || scanning}
           className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {scanning ? "Scanning…" : "Scan"}
+          {scanning ? "Scanning…" : cachedAt ? "Rescan" : "Scan"}
         </button>
 
         <span className="min-w-0 flex-1 truncate text-xs text-slate-400" title={projectPath ?? ""}>
@@ -94,6 +141,7 @@ export default function App() {
         {graph && (
           <span className="shrink-0 text-xs text-slate-400">
             {graph.nodes.length} files · {graph.edges.length} imports
+            {cachedAt && <> · cached {describeAge(cachedAt)}</>}
           </span>
         )}
       </header>
