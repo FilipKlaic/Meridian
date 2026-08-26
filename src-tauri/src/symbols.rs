@@ -465,3 +465,93 @@ fn resolve_callee(
         _ => None,
     }
 }
+
+/// The span a declaration occupies in its file.
+#[derive(Debug)]
+pub struct Declaration {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    /// 1-based, inclusive.
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+/// Widen a declaration to the syntax a reader expects to see: `export const foo =
+/// () => {}` rather than the bare declarator in the middle of it.
+fn outermost(node: TsNode) -> TsNode {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "lexical_declaration" | "variable_declaration" | "export_statement" => current = parent,
+            _ => break,
+        }
+    }
+    current
+}
+
+/// Find a declaration by name, re-deriving its position from the file as it is
+/// on disk right now. Nothing about a symbol's location is cached, so an edit
+/// since the last scan moves the source rather than silently mismatching it.
+pub fn locate_declaration(
+    root: TsNode,
+    src: &[u8],
+    name: &str,
+    container: Option<&str>,
+) -> Option<Declaration> {
+    let found = match container {
+        Some(class_name) => find_method(root, src, class_name, name)?,
+        None => outermost(find_declaration(root, src, name)?),
+    };
+    Some(Declaration {
+        start_byte: found.start_byte(),
+        end_byte: found.end_byte(),
+        start_line: found.start_position().row + 1,
+        end_line: found.end_position().row + 1,
+    })
+}
+
+fn find_declaration<'a>(node: TsNode<'a>, src: &[u8], name: &str) -> Option<TsNode<'a>> {
+    let matches = match node.kind() {
+        "function_declaration" | "generator_function_declaration" | "class_declaration" => {
+            field_text(node, "name", src) == Some(name)
+        }
+        "variable_declarator" => {
+            field_text(node, "name", src) == Some(name)
+                && node
+                    .child_by_field_name("value")
+                    .is_some_and(|v| matches!(v.kind(), "arrow_function" | "function_expression"))
+        }
+        _ => false,
+    };
+    if matches {
+        return Some(node);
+    }
+
+    let mut cursor = node.walk();
+    let children: Vec<TsNode> = node.named_children(&mut cursor).collect();
+    children
+        .into_iter()
+        .find_map(|child| find_declaration(child, src, name))
+}
+
+fn find_method<'a>(
+    node: TsNode<'a>,
+    src: &[u8],
+    class_name: &str,
+    method: &str,
+) -> Option<TsNode<'a>> {
+    if node.kind() == "class_declaration" && field_text(node, "name", src) == Some(class_name) {
+        let body = node.child_by_field_name("body")?;
+        let mut cursor = body.walk();
+        let members: Vec<TsNode> = body.named_children(&mut cursor).collect();
+        return members.into_iter().find(|member| {
+            member.kind() == "method_definition" && field_text(*member, "name", src) == Some(method)
+        });
+    }
+
+    let mut cursor = node.walk();
+    let children: Vec<TsNode> = node.named_children(&mut cursor).collect();
+    children
+        .into_iter()
+        .find_map(|child| find_method(child, src, class_name, method))
+}

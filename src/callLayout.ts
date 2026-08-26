@@ -81,6 +81,8 @@ export function toCallView(
       detail: detailFor(symbol, focusFile),
       kind: symbol.kind,
       file: symbol.file,
+      name: symbol.name,
+      container: symbol.container,
       exported: symbol.exported,
       external: symbol.file !== focusFile,
       hue: directoryHue(symbol.file),

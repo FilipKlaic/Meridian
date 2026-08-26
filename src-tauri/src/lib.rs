@@ -1,9 +1,28 @@
 pub mod scanner;
+pub mod source;
 pub mod symbols;
 
 use std::path::PathBuf;
 
 use scanner::ProjectGraph;
+
+/// Read a declaration's source, or a whole file when `name` is omitted.
+#[tauri::command]
+async fn read_source(
+    path: String,
+    name: Option<String>,
+    container: Option<String>,
+) -> Result<source::SourceView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        source::read(
+            std::path::Path::new(&path),
+            name.as_deref(),
+            container.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| format!("read task failed: {e}"))?
+}
 
 #[tauri::command]
 async fn scan_project(path: String) -> Result<ProjectGraph, String> {
@@ -45,7 +64,7 @@ pub fn run() {
                 .add_migrations(DB_URL, migrations())
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![scan_project])
+        .invoke_handler(tauri::generate_handler![scan_project, read_source])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

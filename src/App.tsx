@@ -24,6 +24,7 @@ import CommandPalette, { type PaletteAction } from "./CommandPalette";
 import FileNode from "./FileNode";
 import Inspector from "./Inspector";
 import RoutedEdge from "./RoutedEdge";
+import SourceDrawer, { type SourceTarget } from "./SourceDrawer";
 import SymbolNode from "./SymbolNode";
 import { EMPTY_CALL_VIEW, toCallView } from "./callLayout";
 import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
@@ -99,6 +100,8 @@ function Workspace() {
   const [tab, setTab] = useState<Tab>("imports");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  /** What the source viewer is showing, or null while it is closed. */
+  const [sourceTarget, setSourceTarget] = useState<SourceTarget | null>(null);
   /** A pending "bring this file into view", re-fired by the nonce on repeat picks. */
   const [revealRequest, setRevealRequest] = useState<{ id: string; nonce: number } | null>(null);
 
@@ -336,6 +339,18 @@ function Workspace() {
     }
   }, [projectPath]);
 
+  /** Absolute path for a project-relative file id, which the reader needs. */
+  const pathOf = useCallback((file: string) => index.byId.get(file)?.path ?? null, [index]);
+
+  /** Show a whole file's source. */
+  const showFileSource = useCallback(
+    (file: string) => {
+      const path = pathOf(file);
+      if (path) setSourceTarget({ path, file, name: null, container: null });
+    },
+    [pathOf],
+  );
+
   const actions = useMemo<PaletteAction[]>(
     () => [
       { id: "open", label: "Open project…", hint: "⌘O", run: pickFolder },
@@ -486,12 +501,19 @@ function Workspace() {
               onNodeClick={(_, node: Node) => {
                 if (!showingCalls) {
                   setSelectedId(node.id);
+                  showFileSource(node.id);
                   return;
                 }
-                // Clicking a symbol from another file re-anchors the view there,
-                // which is how you walk outward through the call graph.
                 const file = String(node.data?.file ?? "");
-                if (file && file !== selectedId) setSelectedId(file);
+                const path = pathOf(file);
+                if (!path) return;
+                setSourceTarget({
+                  path,
+                  file,
+                  name: String(node.data?.name ?? ""),
+                  container: (node.data?.container as string | null) ?? null,
+                  external: Boolean(node.data?.external),
+                });
               }}
               onPaneClick={() => !showingCalls && setSelectedId(null)}
               nodeTypes={nodeTypes}
@@ -558,6 +580,16 @@ function Workspace() {
             </div>
           )}
         </main>
+
+        <SourceDrawer
+          target={sourceTarget}
+          onClose={() => setSourceTarget(null)}
+          onFocusFile={(file) => {
+            // Re-anchor the call view on this symbol's own file.
+            setSelectedId(file);
+            setSourceTarget(null);
+          }}
+        />
       </div>
 
       <CommandPalette
