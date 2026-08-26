@@ -1,0 +1,159 @@
+import { useMemo, useState } from "react";
+
+import Highlight from "./Highlight";
+import { rank } from "./fuzzy";
+import type { FileEntry, GraphIndex } from "./graphIndex";
+import { directoryHue } from "./layout";
+
+function Dot({ id }: { id: string }) {
+  return (
+    <span
+      className="size-1.5 shrink-0"
+      style={{ background: `hsl(${directoryHue(id)} 70% 58%)` }}
+    />
+  );
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-3 py-1.5 text-[9px] tracking-[0.18em] text-bp-muted/60 uppercase">
+      {children}
+    </div>
+  );
+}
+
+/** A file row in the "imports" / "imported by" lists. */
+function RelatedRow({
+  entry,
+  onSelect,
+}: {
+  entry: FileEntry;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(entry.id)}
+      title={entry.id}
+      className="flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] text-bp-muted transition-colors hover:bg-bp-panel hover:text-bp-text"
+    >
+      <Dot id={entry.id} />
+      <span className="truncate">{entry.label}</span>
+      <span className="ml-auto shrink-0 truncate text-[9px] text-bp-muted/50">
+        {entry.directory || "/"}
+      </span>
+    </button>
+  );
+}
+
+export default function Inspector({
+  index,
+  selectedId,
+  onSelect,
+}: {
+  index: GraphIndex;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+
+  const results = useMemo(
+    () => rank(query, index.entries, (entry) => entry.id),
+    [query, index.entries],
+  );
+
+  // With no query, keep the directory grouping; once filtering, a flat ranked
+  // list is what the user is actually reading.
+  const filtering = query.trim().length > 0;
+  const selected = selectedId ? (index.byId.get(selectedId) ?? null) : null;
+
+  return (
+    <aside className="flex w-64 shrink-0 flex-col border-r border-bp-rule bg-bp-void/60">
+      <div className="border-b border-bp-rule p-2">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Filter files…"
+          spellCheck={false}
+          className="w-full border border-bp-rule bg-bp-canvas px-2 py-1.5 font-mono text-[11px] text-bp-text placeholder:text-bp-muted/40 focus:border-bp-accent focus:outline-none"
+        />
+      </div>
+
+      <div className="bp-scroll min-h-0 flex-1 overflow-y-auto py-1">
+        {results.length === 0 && (
+          <p className="px-3 py-4 text-[11px] text-bp-muted/50">No files match.</p>
+        )}
+
+        {filtering
+          ? results.map(({ item, match }) => (
+              <button
+                key={item.id}
+                onClick={() => onSelect(item.id)}
+                title={item.id}
+                className={`flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors hover:bg-bp-panel ${
+                  item.id === selectedId ? "bg-bp-panel text-bp-accent" : "text-bp-text"
+                }`}
+              >
+                <Dot id={item.id} />
+                <span className="truncate">
+                  <Highlight text={item.id} positions={match.positions} />
+                </span>
+              </button>
+            ))
+          : index.directories.map((directory) => (
+              <div key={directory.name || "/"}>
+                <SectionTitle>{directory.name || "/"}</SectionTitle>
+                {directory.files.map((entry) => (
+                  <button
+                    key={entry.id}
+                    onClick={() => onSelect(entry.id)}
+                    title={entry.id}
+                    className={`flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors hover:bg-bp-panel ${
+                      entry.id === selectedId ? "bg-bp-panel text-bp-accent" : "text-bp-text"
+                    }`}
+                  >
+                    <Dot id={entry.id} />
+                    <span className="truncate">{entry.label}</span>
+                    <span className="tabular ml-auto shrink-0 text-[9px] text-bp-muted/50">
+                      {entry.importedBy.length}/{entry.imports.length}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ))}
+      </div>
+
+      {selected && (
+        <div className="bp-scroll max-h-72 shrink-0 overflow-y-auto border-t border-bp-rule bg-bp-canvas/60">
+          <div className="px-3 pt-2.5 pb-1">
+            <p className="truncate text-[11px] text-bp-text" title={selected.path}>
+              {selected.label}
+            </p>
+            <p className="truncate text-[9px] text-bp-muted/60" title={selected.id}>
+              {selected.directory || "/"}
+            </p>
+          </div>
+
+          <SectionTitle>Imports · {selected.imports.length}</SectionTitle>
+          {selected.imports.length === 0 ? (
+            <p className="px-3 pb-1 text-[10px] text-bp-muted/40">Nothing.</p>
+          ) : (
+            selected.imports.map((id) => {
+              const entry = index.byId.get(id);
+              return entry ? <RelatedRow key={id} entry={entry} onSelect={onSelect} /> : null;
+            })
+          )}
+
+          <SectionTitle>Imported by · {selected.importedBy.length}</SectionTitle>
+          {selected.importedBy.length === 0 ? (
+            <p className="px-3 pb-2 text-[10px] text-bp-muted/40">Nothing.</p>
+          ) : (
+            selected.importedBy.map((id) => {
+              const entry = index.byId.get(id);
+              return entry ? <RelatedRow key={id} entry={entry} onSelect={onSelect} /> : null;
+            })
+          )}
+        </div>
+      )}
+    </aside>
+  );
+}

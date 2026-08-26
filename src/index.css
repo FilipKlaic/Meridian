@@ -148,6 +148,21 @@ body {
   opacity: 0.08;
 }
 
+/* Thin, unobtrusive scrollbars for the side panels. */
+.bp-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-bp-rule) transparent;
+}
+.bp-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.bp-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-bp-rule);
+}
+.bp-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* --------------------------------------------------- react flow chrome ---- */
 
 .react-flow__handle {

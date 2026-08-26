@@ -6,8 +6,13 @@ import {
   BackgroundVariant,
   MiniMap,
   ReactFlow,
+  ReactFlowProvider,
+  getNodesBounds,
+  getViewportForBounds,
   useEdgesState,
   useNodesState,
+  useReactFlow,
+  useStore,
   type Edge,
   type EdgeMarker,
   type Node,
@@ -15,12 +20,19 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { CanvasHud, LevelOfDetail } from "./CanvasHud";
+import CommandPalette, { type PaletteAction } from "./CommandPalette";
 import FileNode from "./FileNode";
+import Inspector from "./Inspector";
 import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
+import { buildIndex } from "./graphIndex";
 import { toFlowGraph } from "./layout";
 import type { ProjectGraph } from "./types";
 
 const nodeTypes = { file: FileNode };
+
+const MIN_ZOOM = 0.05;
+/** Never zoom past 1:1 when framing, however small the project is. */
+const MAX_FIT_ZOOM = 1;
 
 /** Short, human-readable age of a cached scan. */
 function describeAge(iso: string): string {
@@ -41,51 +53,100 @@ function Readout({ label, value }: { label: string; value: string | number }) {
   );
 }
 
-export default function App() {
+const TOOLBAR_BUTTON =
+  "border border-bp-rule px-2.5 py-1 text-[10px] tracking-widest uppercase transition-colors hover:border-bp-accent hover:text-bp-accent";
+
+function Workspace() {
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [graph, setGraph] = useState<ProjectGraph | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Set while the displayed graph came from the cache rather than a fresh scan. */
   const [cachedAt, setCachedAt] = useState<string | null>(null);
-  /** Node the pointer is over, which everything unrelated dims away from. */
-  const [focusId, setFocusId] = useState<string | null>(null);
+  /** Sticky selection, from a click in the graph, the inspector, or the palette. */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** Transient, from the pointer being over a node in the graph. */
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  /** A pending "bring this file into view", re-fired by the nonce on repeat picks. */
+  const [revealRequest, setRevealRequest] = useState<{ id: string; nonce: number } | null>(null);
+
+  const { setCenter, setViewport, getNode, getNodes, getZoom } = useReactFlow();
+  const containerWidth = useStore((state) => state.width);
+  const containerHeight = useStore((state) => state.height);
+
+  /**
+   * Frame the whole graph. This computes the viewport directly rather than
+   * calling `fitView`, whose drain path defers through `requestAnimationFrame`
+   * and so does nothing at all in a document that is not being painted.
+   */
+  const frameGraph = useCallback(
+    (duration = 0) => {
+      const flowNodes = getNodes();
+      if (flowNodes.length === 0 || !containerWidth || !containerHeight) return;
+      const bounds = getNodesBounds(flowNodes);
+      setViewport(
+        getViewportForBounds(bounds, containerWidth, containerHeight, MIN_ZOOM, MAX_FIT_ZOOM, 0.12),
+        { duration },
+      );
+    },
+    [getNodes, setViewport, containerWidth, containerHeight],
+  );
 
   // React Flow owns node/edge state so the user can drag nodes around; we only
   // seed it whenever a different graph lands.
   const [nodes, setNodes, onNodesChange] = useNodesState([] as ReturnType<typeof toFlowGraph>["nodes"]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as ReturnType<typeof toFlowGraph>["edges"]);
-  // Bumped per graph so React Flow remounts and re-runs `fitView` on the new layout.
-  const [graphKey, setGraphKey] = useState(0);
+  /** Bumped per graph to ask for the new layout to be framed. */
+  const [fitRequest, setFitRequest] = useState(0);
 
   useEffect(() => {
     const laidOut = graph ? toFlowGraph(graph) : { nodes: [], edges: [] };
     setNodes(laidOut.nodes);
     setEdges(laidOut.edges);
-    setFocusId(null);
-    setGraphKey((key) => key + 1);
+    setSelectedId(null);
+    setHoverId(null);
+    if (laidOut.nodes.length > 0) setFitRequest((request) => request + 1);
   }, [graph, setNodes, setEdges]);
+
+  // The `fitView` prop only fires when React Flow's store initialises, and the
+  // store outlives any one graph now that the provider sits above it — so every
+  // scan after the first has to ask for its own framing.
+  useEffect(() => {
+    if (fitRequest === 0) return;
+    // Safe to frame immediately: child effects run first, so React Flow has
+    // already taken the new nodes into its store by the time this runs.
+    frameGraph();
+  }, [fitRequest, frameGraph]);
+
+  const index = useMemo(() => buildIndex(graph), [graph]);
+
+  /** Hover wins over selection, so pointing at the graph always answers first. */
+  const focusId = hoverId ?? selectedId;
 
   /** The focused file and everything it links to, in either direction. */
   const neighbourhood = useMemo(() => {
     if (!focusId) return null;
-    const related = new Set([focusId]);
-    for (const edge of edges) {
-      if (edge.source === focusId) related.add(edge.target);
-      if (edge.target === focusId) related.add(edge.source);
-    }
-    return related;
-  }, [focusId, edges]);
+    const entry = index.byId.get(focusId);
+    return new Set([focusId, ...(entry?.imports ?? []), ...(entry?.importedBy ?? [])]);
+  }, [focusId, index]);
 
+  /**
+   * Decorate nodes with selection and dimming, reusing the node object whenever
+   * neither actually changed. Returning fresh objects every render would make
+   * React Flow diff them, emit changes, and re-render us straight back — a loop
+   * that also cancels any viewport animation in flight.
+   */
   const displayNodes = useMemo(
     () =>
-      neighbourhood
-        ? nodes.map((node) => ({
-            ...node,
-            className: neighbourhood.has(node.id) ? undefined : "is-dimmed",
-          }))
-        : nodes,
-    [nodes, neighbourhood],
+      nodes.map((node) => {
+        const selected = node.id === selectedId;
+        const className = neighbourhood && !neighbourhood.has(node.id) ? "is-dimmed" : undefined;
+        if (node.selected === selected && node.className === className) return node;
+        return { ...node, selected, className };
+      }),
+    [nodes, neighbourhood, selectedId],
   );
 
   const displayEdges = useMemo<Edge[]>(() => {
@@ -101,6 +162,30 @@ export default function App() {
       };
     });
   }, [edges, focusId]);
+
+  /**
+   * Select a file and bring it into view. The centring has to wait for the
+   * selection render to commit: panning in the same tick as a state update gets
+   * cancelled, because the re-render syncs the pre-animation viewport back into
+   * the pan/zoom handler and kills the transition in flight.
+   */
+  const revealFile = useCallback((id: string) => {
+    setSelectedId(id);
+    setRevealRequest((previous) => ({ id, nonce: (previous?.nonce ?? 0) + 1 }));
+  }, []);
+
+  useEffect(() => {
+    if (!revealRequest) return;
+    const node = getNode(revealRequest.id);
+    if (!node) return;
+    setCenter(
+      node.position.x + (node.width ?? 0) / 2,
+      node.position.y + (node.height ?? 0) / 2,
+      // Keep the user's zoom unless they are so far out that the file would be
+      // an unreadable speck once centred.
+      { zoom: Math.max(getZoom(), 0.8), duration: 380 },
+    );
+  }, [revealRequest, getNode, setCenter, getZoom]);
 
   /** Show the stored graph for a project, if there is one. */
   const showCached = useCallback(async (path: string) => {
@@ -165,6 +250,49 @@ export default function App() {
     }
   }, [projectPath]);
 
+  const actions = useMemo<PaletteAction[]>(
+    () => [
+      { id: "open", label: "Open project…", hint: "⌘O", run: pickFolder },
+      {
+        id: "scan",
+        label: cachedAt ? "Rescan project" : "Scan project",
+        hint: "⌘R",
+        disabled: !projectPath || scanning,
+        run: scan,
+      },
+      {
+        id: "inspector",
+        label: inspectorOpen ? "Hide inspector" : "Show inspector",
+        hint: "⌘B",
+        run: () => setInspectorOpen((value) => !value),
+      },
+    ],
+    [pickFolder, scan, cachedAt, projectPath, scanning, inspectorOpen],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const meta = event.metaKey || event.ctrlKey;
+      if (meta && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((value) => !value);
+      } else if (meta && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        setInspectorOpen((value) => !value);
+      } else if (meta && event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        void pickFolder();
+      } else if (meta && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        void scan();
+      } else if (event.key === "Escape" && !paletteOpen) {
+        setSelectedId(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pickFolder, scan, paletteOpen]);
+
   return (
     <div className="flex h-full flex-col bg-bp-canvas font-mono text-bp-text">
       {/* The traffic lights float over this bar, so it doubles as the drag region. */}
@@ -178,10 +306,7 @@ export default function App() {
 
         <span className="h-4 w-px bg-bp-rule" />
 
-        <button
-          onClick={pickFolder}
-          className="border border-bp-rule px-2.5 py-1 text-[10px] tracking-widest text-bp-muted uppercase transition-colors hover:border-bp-accent hover:text-bp-accent"
-        >
+        <button onClick={pickFolder} className={`${TOOLBAR_BUTTON} text-bp-muted`}>
           Open
         </button>
 
@@ -191,6 +316,14 @@ export default function App() {
           className="border border-bp-accent/60 bg-bp-accent/10 px-2.5 py-1 text-[10px] tracking-widest text-bp-accent uppercase transition-colors hover:bg-bp-accent/20 disabled:cursor-not-allowed disabled:border-bp-rule disabled:bg-transparent disabled:text-bp-muted/40"
         >
           {scanning ? "Scanning" : cachedAt ? "Rescan" : "Scan"}
+        </button>
+
+        <button
+          onClick={() => setPaletteOpen(true)}
+          className={`${TOOLBAR_BUTTON} text-bp-muted/70`}
+          title="Command palette"
+        >
+          ⌘K
         </button>
 
         <span
@@ -215,61 +348,88 @@ export default function App() {
         </div>
       )}
 
-      <main className="min-h-0 flex-1">
-        {nodes.length > 0 ? (
-          <ReactFlow
-            key={graphKey}
-            nodes={displayNodes}
-            edges={displayEdges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onNodeMouseEnter={(_, node: Node) => setFocusId(node.id)}
-            onNodeMouseLeave={() => setFocusId(null)}
-            onPaneClick={() => setFocusId(null)}
-            nodeTypes={nodeTypes}
-            fitView
-            minZoom={0.05}
-            proOptions={{ hideAttribution: true }}
-            colorMode="dark"
-          >
-            {/* Fine and coarse rules together read as drafting paper. */}
-            <Background
-              id="fine"
-              variant={BackgroundVariant.Lines}
-              gap={18}
-              lineWidth={1}
-              color="rgba(56,189,248,0.045)"
-            />
-            <Background
-              id="coarse"
-              variant={BackgroundVariant.Lines}
-              gap={108}
-              lineWidth={1}
-              color="rgba(56,189,248,0.1)"
-            />
-            <LevelOfDetail />
-            <CanvasHud />
-            <MiniMap
-              pannable
-              zoomable
-              nodeColor={(node) => `hsl(${Number(node.data?.hue ?? 190)} 70% 55%)`}
-              nodeStrokeWidth={0}
-              maskColor="rgba(4,12,22,0.72)"
-            />
-          </ReactFlow>
-        ) : (
-          <div className="bp-grid flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-            <p className="text-[11px] tracking-[0.2em] text-bp-muted uppercase">
-              {projectPath ? (scanning ? "Scanning project" : "Awaiting scan") : "No project loaded"}
-            </p>
-            <p className="text-[11px] text-bp-muted/60">
-              {projectPath
-                ? "Run a scan to chart this project's imports."
-                : "Open a TypeScript project to begin."}
-            </p>
-          </div>
+      <div className="flex min-h-0 flex-1">
+        {inspectorOpen && graph && (
+          <Inspector index={index} selectedId={selectedId} onSelect={revealFile} />
         )}
-      </main>
+
+        <main className="min-h-0 min-w-0 flex-1">
+          {nodes.length > 0 ? (
+            <ReactFlow
+              nodes={displayNodes}
+              edges={displayEdges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodeMouseEnter={(_, node: Node) => setHoverId(node.id)}
+              onNodeMouseLeave={() => setHoverId(null)}
+              onNodeClick={(_, node: Node) => setSelectedId(node.id)}
+              onPaneClick={() => setSelectedId(null)}
+              nodeTypes={nodeTypes}
+              minZoom={0.05}
+              proOptions={{ hideAttribution: true }}
+              colorMode="dark"
+            >
+              {/* Fine and coarse rules together read as drafting paper. */}
+              <Background
+                id="fine"
+                variant={BackgroundVariant.Lines}
+                gap={18}
+                lineWidth={1}
+                color="rgba(56,189,248,0.045)"
+              />
+              <Background
+                id="coarse"
+                variant={BackgroundVariant.Lines}
+                gap={108}
+                lineWidth={1}
+                color="rgba(56,189,248,0.1)"
+              />
+              <LevelOfDetail />
+              <CanvasHud onFit={() => frameGraph(320)} />
+              <MiniMap
+                pannable
+                zoomable
+                nodeColor={(node) => `hsl(${Number(node.data?.hue ?? 190)} 70% 55%)`}
+                nodeStrokeWidth={0}
+                maskColor="rgba(4,12,22,0.72)"
+              />
+            </ReactFlow>
+          ) : (
+            <div className="bp-grid flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+              <p className="text-[11px] tracking-[0.2em] text-bp-muted uppercase">
+                {projectPath
+                  ? scanning
+                    ? "Scanning project"
+                    : "Awaiting scan"
+                  : "No project loaded"}
+              </p>
+              <p className="text-[11px] text-bp-muted/60">
+                {projectPath
+                  ? "Run a scan to chart this project's imports."
+                  : "Open a TypeScript project to begin."}
+              </p>
+            </div>
+          )}
+        </main>
+      </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        index={index}
+        actions={actions}
+        onSelectFile={revealFile}
+      />
     </div>
+  );
+}
+
+export default function App() {
+  // The provider sits outside the canvas so the inspector and palette can drive
+  // the viewport even while React Flow is remounting on a new graph.
+  return (
+    <ReactFlowProvider>
+      <Workspace />
+    </ReactFlowProvider>
   );
 }

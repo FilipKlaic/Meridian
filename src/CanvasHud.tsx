@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Panel, useReactFlow, useStore } from "@xyflow/react";
 
+
 /**
  * Swaps detail in and out by zoom band. Reading the zoom in one small component
  * and toggling a class on the container keeps every node out of the re-render,
@@ -23,9 +24,9 @@ const BUTTON =
   "h-6 w-6 border border-bp-rule text-bp-muted hover:border-bp-accent hover:text-bp-accent transition-colors";
 
 /** Zoom controls and viewport readout, in the register of an instrument panel. */
-export function CanvasHud() {
+export function CanvasHud({ onFit }: { onFit: () => void }) {
   const zoom = useStore((state) => state.transform[2]);
-  const { zoomIn, zoomOut, fitView } = useReactFlow();
+  const { zoomIn, zoomOut } = useReactFlow();
 
   return (
     <Panel
@@ -38,11 +39,7 @@ export function CanvasHud() {
       <button className={BUTTON} onClick={() => zoomIn()} title="Zoom in">
         +
       </button>
-      <button
-        className={`${BUTTON} w-auto px-2`}
-        onClick={() => fitView({ duration: 320 })}
-        title="Fit to view"
-      >
+      <button className={`${BUTTON} w-auto px-2`} onClick={onFit} title="Fit to view">
         FIT
       </button>
       <span className="tabular flex w-12 items-center justify-end px-1 text-bp-muted">

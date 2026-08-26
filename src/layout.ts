@@ -42,7 +42,7 @@ function extensionOf(label: string): string {
 const HUE_START = 150;
 const HUE_RANGE = 120;
 
-function directoryHue(id: string): number {
+export function directoryHue(id: string): number {
   const slash = id.lastIndexOf("/");
   const directory = slash === -1 ? "" : id.slice(0, slash);
 
@@ -112,6 +112,11 @@ export function toFlowGraph(graph: ProjectGraph): { nodes: Node[]; edges: Edge[]
       // handle centred on its left edge and the source handle on its right.
       width,
       height: NODE_HEIGHT,
+      // `width`/`height` alone do not count as measured: `adoptUserNodes` fills
+      // `measured` purely from this field, and treats the whole graph as
+      // uninitialised while any node lacks it — which silently makes `fitView`
+      // and friends do nothing at all.
+      measured: { width, height: NODE_HEIGHT },
       handles: [
         {
           id: null,
