@@ -24,13 +24,17 @@ import CommandPalette, { type PaletteAction } from "./CommandPalette";
 import FileNode from "./FileNode";
 import Inspector from "./Inspector";
 import RoutedEdge from "./RoutedEdge";
+import SymbolNode from "./SymbolNode";
+import { EMPTY_CALL_VIEW, toCallView } from "./callLayout";
 import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
 import { buildIndex } from "./graphIndex";
 import { toFlowGraph } from "./layout";
 import type { ProjectGraph } from "./types";
 
-const nodeTypes = { file: FileNode };
+const nodeTypes = { file: FileNode, symbol: SymbolNode };
 const edgeTypes = { routed: RoutedEdge };
+
+type Tab = "imports" | "calls";
 
 const MIN_ZOOM = 0.05;
 /** Never zoom past 1:1 when framing, however small the project is. */
@@ -55,6 +59,29 @@ function Readout({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2.5 py-1 text-[10px] tracking-widest uppercase transition-colors ${
+        active
+          ? "bg-bp-accent/15 text-bp-accent"
+          : "text-bp-muted hover:text-bp-text"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 const TOOLBAR_BUTTON =
   "border border-bp-rule px-2.5 py-1 text-[10px] tracking-widest uppercase transition-colors hover:border-bp-accent hover:text-bp-accent";
 
@@ -69,6 +96,7 @@ function Workspace() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /** Transient, from the pointer being over a node in the graph. */
   const [hoverId, setHoverId] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("imports");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** A pending "bring this file into view", re-fired by the nonce on repeat picks. */
@@ -124,15 +152,39 @@ function Workspace() {
 
   const index = useMemo(() => buildIndex(graph), [graph]);
 
-  /** Hover wins over selection, so pointing at the graph always answers first. */
-  const focusId = hoverId ?? selectedId;
+  /**
+   * The call graph is always anchored to one file. Whole-project function graphs
+   * run to thousands of nodes and read as noise, so stepping outward is done by
+   * focusing a neighbour rather than widening the radius.
+   */
+  const callView = useMemo(
+    () => (tab === "calls" ? toCallView(graph?.symbols ?? [], graph?.calls ?? [], selectedId) : EMPTY_CALL_VIEW),
+    [tab, graph, selectedId],
+  );
 
-  /** The focused file and everything it links to, in either direction. */
+  const showingCalls = tab === "calls";
+
+  /**
+   * Hover wins over selection, so pointing at the graph always answers first.
+   * In the call view the selection is the *anchor file*, not a node on screen,
+   * so only hover can focus there.
+   */
+  const focusId = showingCalls ? hoverId : (hoverId ?? selectedId);
+
+  /** The focused node and everything it links to, in either direction. */
   const neighbourhood = useMemo(() => {
     if (!focusId) return null;
-    const entry = index.byId.get(focusId);
-    return new Set([focusId, ...(entry?.imports ?? []), ...(entry?.importedBy ?? [])]);
-  }, [focusId, index]);
+    if (!showingCalls) {
+      const entry = index.byId.get(focusId);
+      return new Set([focusId, ...(entry?.imports ?? []), ...(entry?.importedBy ?? [])]);
+    }
+    const related = new Set([focusId]);
+    for (const edge of callView.edges) {
+      if (edge.source === focusId) related.add(edge.target);
+      if (edge.target === focusId) related.add(edge.source);
+    }
+    return related;
+  }, [focusId, index, showingCalls, callView.edges]);
 
   /**
    * Decorate nodes with selection and dimming, reusing the node object whenever
@@ -164,6 +216,38 @@ function Workspace() {
       };
     });
   }, [edges, focusId]);
+
+  const activeNodes = useMemo(() => {
+    if (!showingCalls) return displayNodes;
+    return callView.nodes.map((node) => {
+      const className = neighbourhood && !neighbourhood.has(node.id) ? "is-dimmed" : undefined;
+      return className ? { ...node, className } : node;
+    });
+  }, [showingCalls, displayNodes, callView.nodes, neighbourhood]);
+
+  const activeEdges = useMemo<Edge[]>(() => {
+    if (!showingCalls) return displayEdges;
+    if (!focusId) return callView.edges;
+    return callView.edges.map((edge) => {
+      if (edge.source === focusId || edge.target === focusId) {
+        return {
+          ...edge,
+          style: { ...edge.style, stroke: "#38bdf8", strokeWidth: 1.6 },
+          markerEnd: { ...(edge.markerEnd as EdgeMarker), color: "#38bdf8" },
+          zIndex: 1,
+        };
+      }
+      // Keep whatever class the edge already carries, so a guessed call stays
+      // dashed while it is dimmed.
+      return { ...edge, className: [edge.className, "is-dimmed"].filter(Boolean).join(" ") };
+    });
+  }, [showingCalls, displayEdges, callView.edges, focusId]);
+
+  // Re-frame whenever the visible graph changes: switching tab, or re-anchoring
+  // the call view on a different file.
+  useEffect(() => {
+    setFitRequest((request) => request + 1);
+  }, [tab, callView]);
 
   /**
    * Select a file and bring it into view. The centring has to wait for the
@@ -263,13 +347,19 @@ function Workspace() {
         run: scan,
       },
       {
+        id: "tab",
+        label: showingCalls ? "Show import graph" : "Show call graph",
+        hint: "⌘T",
+        run: () => setTab(showingCalls ? "imports" : "calls"),
+      },
+      {
         id: "inspector",
         label: inspectorOpen ? "Hide inspector" : "Show inspector",
         hint: "⌘B",
         run: () => setInspectorOpen((value) => !value),
       },
     ],
-    [pickFolder, scan, cachedAt, projectPath, scanning, inspectorOpen],
+    [pickFolder, scan, cachedAt, projectPath, scanning, inspectorOpen, showingCalls],
   );
 
   useEffect(() => {
@@ -281,6 +371,9 @@ function Workspace() {
       } else if (meta && event.key.toLowerCase() === "b") {
         event.preventDefault();
         setInspectorOpen((value) => !value);
+      } else if (meta && event.key.toLowerCase() === "t") {
+        event.preventDefault();
+        setTab((current) => (current === "calls" ? "imports" : "calls"));
       } else if (meta && event.key.toLowerCase() === "o") {
         event.preventDefault();
         void pickFolder();
@@ -320,6 +413,15 @@ function Workspace() {
           {scanning ? "Scanning" : cachedAt ? "Rescan" : "Scan"}
         </button>
 
+        <span className="flex border border-bp-rule">
+          <TabButton active={tab === "imports"} onClick={() => setTab("imports")}>
+            Imports
+          </TabButton>
+          <TabButton active={tab === "calls"} onClick={() => setTab("calls")}>
+            Calls
+          </TabButton>
+        </span>
+
         <button
           onClick={() => setPaletteOpen(true)}
           className={`${TOOLBAR_BUTTON} text-bp-muted/70`}
@@ -337,8 +439,25 @@ function Workspace() {
 
         {graph && (
           <span className="flex shrink-0 items-center gap-4 text-[11px]">
-            <Readout label="files" value={graph.nodes.length} />
-            <Readout label="imports" value={graph.edges.length} />
+            {showingCalls ? (
+              <>
+                <Readout label="in file" value={callView.ownCount} />
+                <Readout label="linked" value={callView.neighbourCount} />
+                <Readout
+                  label="calls"
+                  value={
+                    callView.guessCount
+                      ? `${callView.edges.length} (${callView.guessCount}?)`
+                      : callView.edges.length
+                  }
+                />
+              </>
+            ) : (
+              <>
+                <Readout label="files" value={graph.nodes.length} />
+                <Readout label="imports" value={graph.edges.length} />
+              </>
+            )}
             <Readout label="scan" value={cachedAt ? describeAge(cachedAt) : "live"} />
           </span>
         )}
@@ -356,16 +475,25 @@ function Workspace() {
         )}
 
         <main className="min-h-0 min-w-0 flex-1">
-          {nodes.length > 0 ? (
+          {activeNodes.length > 0 ? (
             <ReactFlow
-              nodes={displayNodes}
-              edges={displayEdges}
-              onNodesChange={onNodesChange}
+              nodes={activeNodes}
+              edges={activeEdges}
+              onNodesChange={showingCalls ? undefined : onNodesChange}
               onEdgesChange={onEdgesChange}
               onNodeMouseEnter={(_, node: Node) => setHoverId(node.id)}
               onNodeMouseLeave={() => setHoverId(null)}
-              onNodeClick={(_, node: Node) => setSelectedId(node.id)}
-              onPaneClick={() => setSelectedId(null)}
+              onNodeClick={(_, node: Node) => {
+                if (!showingCalls) {
+                  setSelectedId(node.id);
+                  return;
+                }
+                // Clicking a symbol from another file re-anchors the view there,
+                // which is how you walk outward through the call graph.
+                const file = String(node.data?.file ?? "");
+                if (file && file !== selectedId) setSelectedId(file);
+              }}
+              onPaneClick={() => !showingCalls && setSelectedId(null)}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               minZoom={0.05}
@@ -400,16 +528,32 @@ function Workspace() {
           ) : (
             <div className="bp-grid flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
               <p className="text-[11px] tracking-[0.2em] text-bp-muted uppercase">
-                {projectPath
-                  ? scanning
+                {!projectPath
+                  ? "No project loaded"
+                  : scanning
                     ? "Scanning project"
-                    : "Awaiting scan"
-                  : "No project loaded"}
+                    : !graph
+                      ? "Awaiting scan"
+                      : showingCalls
+                        ? !graph.symbols
+                          ? "Rescan needed"
+                          : selectedId
+                            ? "No functions here"
+                            : "No file selected"
+                        : "Awaiting scan"}
               </p>
-              <p className="text-[11px] text-bp-muted/60">
-                {projectPath
-                  ? "Run a scan to chart this project's imports."
-                  : "Open a TypeScript project to begin."}
+              <p className="max-w-md text-[11px] text-bp-muted/60">
+                {!projectPath
+                  ? "Open a TypeScript project to begin."
+                  : !graph
+                    ? "Run a scan to chart this project's imports."
+                    : showingCalls
+                      ? !graph.symbols
+                        ? "This project was scanned before function analysis existed. Rescan to chart its calls."
+                        : selectedId
+                          ? `${selectedId} declares no functions, methods or classes.`
+                          : "Pick a file in the inspector or with ⌘K to chart the calls into and out of it."
+                      : "Run a scan to chart this project's imports."}
               </p>
             </div>
           )}

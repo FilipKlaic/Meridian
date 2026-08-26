@@ -1,4 +1,5 @@
 pub mod scanner;
+pub mod symbols;
 
 use std::path::PathBuf;
 

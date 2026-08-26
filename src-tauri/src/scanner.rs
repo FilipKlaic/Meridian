@@ -3,7 +3,9 @@ use std::path::{Component, Path, PathBuf};
 
 use ignore::WalkBuilder;
 use serde::Serialize;
-use tree_sitter::{Node as TsNode, Parser};
+use tree_sitter::{Node as TsNode, Parser, Tree};
+
+use crate::symbols::{self, Call, CallContext, FileSymbols, Symbol};
 
 #[derive(Debug, Serialize)]
 pub struct GraphNode {
@@ -25,6 +27,10 @@ pub struct GraphEdge {
 pub struct ProjectGraph {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
+    /// Functions, methods and classes declared across the project.
+    pub symbols: Vec<Symbol>,
+    /// Resolved calls between them.
+    pub calls: Vec<Call>,
 }
 
 /// Extensions we parse. Declaration files (`.d.ts`) come along for the ride since
@@ -68,10 +74,10 @@ pub fn scan(root: &Path) -> Result<ProjectGraph, String> {
         });
     }
 
+    // Parse every file once and keep the trees: the import pass, the declaration
+    // pass and the call pass all read the same syntax.
     let mut parser = Parser::new();
-    let mut seen_edges: HashSet<(String, String)> = HashSet::new();
-    let mut edges = Vec::new();
-
+    let mut parsed: Vec<(PathBuf, String, Tree)> = Vec::with_capacity(files.len());
     for path in &files {
         let Ok(source) = std::fs::read_to_string(path) else {
             // Unreadable or non-UTF-8 file: it still exists as a node, just without edges.
@@ -89,7 +95,13 @@ pub fn scan(root: &Path) -> Result<ProjectGraph, String> {
         let Some(tree) = parser.parse(&source, None) else {
             continue;
         };
+        parsed.push((path.clone(), source, tree));
+    }
 
+    let mut seen_edges: HashSet<(String, String)> = HashSet::new();
+    let mut edges = Vec::new();
+
+    for (path, source, tree) in &parsed {
         let mut specifiers = Vec::new();
         collect_specifiers(tree.root_node(), source.as_bytes(), &mut specifiers);
 
@@ -123,7 +135,99 @@ pub fn scan(root: &Path) -> Result<ProjectGraph, String> {
         }
     }
 
-    Ok(ProjectGraph { nodes, edges })
+    let (symbols, calls) = analyse_calls(&root, &parsed, &ids, &known);
+
+    Ok(ProjectGraph {
+        nodes,
+        edges,
+        symbols,
+        calls,
+    })
+}
+
+/// Second half of the scan: what each file declares, and which declarations call
+/// which. Split out because it needs the whole project's exports before any one
+/// file's calls can be resolved.
+fn analyse_calls(
+    root: &Path,
+    parsed: &[(PathBuf, String, Tree)],
+    ids: &HashMap<PathBuf, String>,
+    known: &HashSet<PathBuf>,
+) -> (Vec<Symbol>, Vec<Call>) {
+    let mut per_file: HashMap<String, FileSymbols> = HashMap::new();
+    for (path, source, tree) in parsed {
+        let Some(file_id) = ids.get(path) else {
+            continue;
+        };
+        per_file.insert(
+            file_id.clone(),
+            symbols::collect_declarations(tree.root_node(), source.as_bytes(), file_id),
+        );
+    }
+
+    // A call to an imported name is resolved against the exports of the file the
+    // import points at, so those have to be known project-wide up front.
+    let exports: HashMap<String, HashMap<String, String>> = per_file
+        .iter()
+        .map(|(file, symbols)| (file.clone(), symbols.exports.clone()))
+        .collect();
+
+    let mut methods_by_name: HashMap<String, Vec<String>> = HashMap::new();
+    for file_symbols in per_file.values() {
+        for symbol in &file_symbols.symbols {
+            if symbol.kind == symbols::SymbolKind::Method {
+                methods_by_name
+                    .entry(symbol.name.clone())
+                    .or_default()
+                    .push(symbol.id.clone());
+            }
+        }
+    }
+
+    let mut calls = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    for (path, source, tree) in parsed {
+        let Some(file_id) = ids.get(path) else {
+            continue;
+        };
+        let Some(file_symbols) = per_file.get(file_id) else {
+            continue;
+        };
+        let dir = path.parent().unwrap_or(root);
+
+        // Reuse the very same specifier resolution the import graph is built
+        // from, so a call can never bind to a file an import would not.
+        let resolve_specifier = |specifier: &str| -> Option<String> {
+            if !is_relative(specifier) {
+                return None;
+            }
+            ids.get(&resolve(dir, specifier, known)?).cloned()
+        };
+        let imports =
+            symbols::collect_imported_names(tree.root_node(), source.as_bytes(), &resolve_specifier);
+
+        let context = CallContext {
+            file: file_symbols,
+            imports: &imports,
+            exports: &exports,
+            methods_by_name: &methods_by_name,
+        };
+        for call in symbols::collect_calls(tree.root_node(), source.as_bytes(), &context) {
+            if seen.insert((call.source.clone(), call.target.clone())) {
+                calls.push(call);
+            }
+        }
+    }
+
+    let mut all_symbols: Vec<Symbol> = per_file
+        .into_values()
+        .flat_map(|file_symbols| file_symbols.symbols)
+        .collect();
+    all_symbols.sort_by(|a, b| a.id.cmp(&b.id));
+    calls.sort_by(|a, b| (&a.source, &a.target).cmp(&(&b.source, &b.target)));
+
+    (all_symbols, calls)
 }
 
 fn collect_source_files(root: &Path) -> Vec<PathBuf> {
@@ -310,7 +414,7 @@ mod tests {
     use std::fs;
 
     /// Build a project tree from `(relative path, contents)` pairs and scan it.
-    fn scan_fixture(files: &[(&str, &str)]) -> (ProjectGraph, tempfile::TempDir) {
+    pub(super) fn scan_fixture(files: &[(&str, &str)]) -> (ProjectGraph, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         for (path, contents) in files {
             let full = dir.path().join(path);
@@ -504,5 +608,231 @@ mod tests {
             ("src/lazy.ts", ""),
         ]);
         assert!(graph.edges.is_empty(), "{:?}", graph.edges);
+    }
+}
+
+#[cfg(test)]
+mod call_tests {
+    use super::tests::scan_fixture;
+    use crate::symbols::Confidence;
+    use std::collections::BTreeSet;
+
+    fn calls(files: &[(&str, &str)]) -> BTreeSet<(String, String, &'static str)> {
+        let (graph, _dir) = scan_fixture(files);
+        graph
+            .calls
+            .iter()
+            .map(|c| {
+                (
+                    c.source.clone(),
+                    c.target.clone(),
+                    match c.confidence {
+                        Confidence::Resolved => "resolved",
+                        Confidence::Guess => "guess",
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn symbol_ids(files: &[(&str, &str)]) -> BTreeSet<String> {
+        let (graph, _dir) = scan_fixture(files);
+        graph.symbols.iter().map(|s| s.id.clone()).collect()
+    }
+
+    #[test]
+    fn declares_functions_arrows_classes_and_methods() {
+        let ids = symbol_ids(&[(
+            "src/a.ts",
+            r#"
+            export function alpha() {}
+            const beta = () => {};
+            export const gamma = function () {};
+            export class Widget {
+                render() {}
+                private hide() {}
+            }
+            "#,
+        )]);
+        assert_eq!(
+            ids,
+            BTreeSet::from([
+                "src/a.ts#Widget".to_string(),
+                "src/a.ts#Widget.hide".to_string(),
+                "src/a.ts#Widget.render".to_string(),
+                "src/a.ts#alpha".to_string(),
+                "src/a.ts#beta".to_string(),
+                "src/a.ts#gamma".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn resolves_calls_within_one_file() {
+        assert_eq!(
+            calls(&[(
+                "src/a.ts",
+                r#"
+                function helper() {}
+                export function main() { helper(); }
+                "#,
+            )]),
+            BTreeSet::from([(
+                "src/a.ts#main".into(),
+                "src/a.ts#helper".into(),
+                "resolved"
+            )])
+        );
+    }
+
+    #[test]
+    fn resolves_calls_through_named_default_and_aliased_imports() {
+        assert_eq!(
+            calls(&[
+                (
+                    "src/main.ts",
+                    r#"
+                    import { fetchUser } from "./api";
+                    import { save as persist } from "./api";
+                    import connect from "./db";
+                    export function run() {
+                        fetchUser();
+                        persist();
+                        connect();
+                    }
+                    "#,
+                ),
+                (
+                    "src/api.ts",
+                    "export function fetchUser() {}\nexport function save() {}",
+                ),
+                ("src/db.ts", "export default function connect() {}"),
+            ]),
+            BTreeSet::from([
+                ("src/main.ts#run".into(), "src/api.ts#fetchUser".into(), "resolved"),
+                ("src/main.ts#run".into(), "src/api.ts#save".into(), "resolved"),
+            ])
+        );
+    }
+
+    #[test]
+    fn resolves_namespace_imports_and_this_methods() {
+        assert_eq!(
+            calls(&[
+                (
+                    "src/main.ts",
+                    r#"
+                    import * as api from "./api";
+                    export class Screen {
+                        load() { api.fetchUser(); this.render(); }
+                        render() {}
+                    }
+                    "#,
+                ),
+                ("src/api.ts", "export function fetchUser() {}"),
+            ]),
+            BTreeSet::from([
+                (
+                    "src/main.ts#Screen.load".into(),
+                    "src/api.ts#fetchUser".into(),
+                    "resolved"
+                ),
+                (
+                    "src/main.ts#Screen.load".into(),
+                    "src/main.ts#Screen.render".into(),
+                    "resolved"
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn attributes_calls_inside_callbacks_to_the_enclosing_function() {
+        assert_eq!(
+            calls(&[(
+                "src/a.ts",
+                r#"
+                function tick() {}
+                export function start() {
+                    setInterval(() => { tick(); }, 10);
+                }
+                "#,
+            )]),
+            BTreeSet::from([("src/a.ts#start".into(), "src/a.ts#tick".into(), "resolved")])
+        );
+    }
+
+    #[test]
+    fn flags_method_calls_on_unknown_receivers_as_guesses() {
+        // `service.refresh()` cannot be bound without knowing what `service` is.
+        assert_eq!(
+            calls(&[
+                (
+                    "src/a.ts",
+                    r#"
+                    import { service } from "./svc";
+                    export function go() { service.refresh(); }
+                    "#,
+                ),
+                ("src/svc.ts", "export class Service { refresh() {} }\nexport const service = new Service();"),
+            ]),
+            BTreeSet::from([(
+                "src/a.ts#go".into(),
+                "src/svc.ts#Service.refresh".into(),
+                "guess"
+            )])
+        );
+    }
+
+    #[test]
+    fn drops_ambiguous_method_names_rather_than_guessing_wildly() {
+        // Two classes declare `get`, so a bare `thing.get()` could be either.
+        let found = calls(&[
+            (
+                "src/a.ts",
+                "export function go() { const thing = make(); thing.get(); }",
+            ),
+            ("src/b.ts", "export class Cache { get() {} }"),
+            ("src/c.ts", "export class Store { get() {} }"),
+        ]);
+        assert!(
+            found.iter().all(|(_, target, _)| !target.ends_with("#Cache.get")
+                && !target.ends_with("#Store.get")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn ignores_calls_to_names_that_resolve_nowhere() {
+        let found = calls(&[(
+            "src/a.ts",
+            r#"
+            import { thing } from "react";
+            export function go() { thing(); console.log("x"); missing(); }
+            "#,
+        )]);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn local_declarations_win_over_an_import_of_the_same_name() {
+        assert_eq!(
+            calls(&[
+                (
+                    "src/a.ts",
+                    r#"
+                    import { render } from "./other";
+                    function render2() {}
+                    function render() { render2(); }
+                    export function go() { render(); }
+                    "#,
+                ),
+                ("src/other.ts", "export function render() {}"),
+            ]),
+            BTreeSet::from([
+                ("src/a.ts#go".into(), "src/a.ts#render".into(), "resolved"),
+                ("src/a.ts#render".into(), "src/a.ts#render2".into(), "resolved"),
+            ])
+        );
     }
 }

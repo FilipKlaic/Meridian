@@ -135,6 +135,19 @@ body {
   stroke-width: 3.2;
 }
 
+/* Symbols from outside the focused file sit back a little. */
+.bp-node.is-external {
+  background: var(--color-bp-canvas);
+  border-style: dashed;
+}
+
+/* A call matched by method name alone, not resolved. Dashed so the picture never
+   claims more certainty than the analysis has. */
+.react-flow__edge.is-guess .react-flow__edge-path {
+  stroke-dasharray: 4 4;
+  opacity: 0.75;
+}
+
 /* ------------------------------------------------------- focus mode ------- */
 
 .react-flow__node,
