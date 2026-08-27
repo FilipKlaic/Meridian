@@ -1,5 +1,7 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
+import { DEFAULT_HUE } from "./layout";
+
 /** One file in the graph, drawn as an instrument panel. */
 export default function FileNode({ data, selected }: NodeProps) {
   const label = String(data.label ?? "");
@@ -7,7 +9,7 @@ export default function FileNode({ data, selected }: NodeProps) {
   const extension = String(data.extension ?? "");
   const inDegree = Number(data.inDegree ?? 0);
   const outDegree = Number(data.outDegree ?? 0);
-  const hue = Number(data.hue ?? 190);
+  const hue = Number(data.hue ?? DEFAULT_HUE);
 
   return (
     <div

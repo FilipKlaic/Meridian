@@ -3,20 +3,15 @@ import { useMemo, useState } from "react";
 import Highlight from "./Highlight";
 import { rank } from "./fuzzy";
 import type { FileEntry, GraphIndex } from "./graphIndex";
-import { directoryHue } from "./layout";
+import { directoryColor } from "./layout";
 
 function Dot({ id }: { id: string }) {
-  return (
-    <span
-      className="size-1.5 shrink-0"
-      style={{ background: `hsl(${directoryHue(id)} 70% 58%)` }}
-    />
-  );
+  return <span className="size-1.5 shrink-0" style={{ background: directoryColor(id) }} />;
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <div className="px-3 py-1.5 text-[9px] tracking-[0.18em] text-bp-muted/60 uppercase">
+    <div className="px-3 py-1.5 text-[9px] tracking-[0.18em] text-bp-faint uppercase">
       {children}
     </div>
   );
@@ -34,11 +29,11 @@ function RelatedRow({
     <button
       onClick={() => onSelect(entry.id)}
       title={entry.id}
-      className="flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] text-bp-muted transition-colors hover:bg-bp-panel hover:text-bp-text"
+      className="flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] text-bp-muted transition-colors hover:bg-bp-hover hover:text-bp-text"
     >
       <Dot id={entry.id} />
       <span className="truncate">{entry.label}</span>
-      <span className="ml-auto shrink-0 truncate text-[9px] text-bp-muted/50">
+      <span className="ml-auto shrink-0 truncate text-[9px] text-bp-faint">
         {entry.directory || "/"}
       </span>
     </button>
@@ -67,20 +62,20 @@ export default function Inspector({
   const selected = selectedId ? (index.byId.get(selectedId) ?? null) : null;
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-bp-rule bg-bp-void/60">
+    <aside className="flex w-64 shrink-0 flex-col border-r border-bp-rule bg-bp-void">
       <div className="border-b border-bp-rule p-2">
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Filter files…"
           spellCheck={false}
-          className="w-full border border-bp-rule bg-bp-canvas px-2 py-1.5 font-mono text-[11px] text-bp-text placeholder:text-bp-muted/40 focus:border-bp-accent focus:outline-none"
+          className="w-full border border-bp-rule bg-bp-canvas px-2 py-1.5 font-mono text-[11px] text-bp-text placeholder:text-bp-faint focus:border-bp-accent focus:outline-none"
         />
       </div>
 
       <div className="bp-scroll min-h-0 flex-1 overflow-y-auto py-1">
         {results.length === 0 && (
-          <p className="px-3 py-4 text-[11px] text-bp-muted/50">No files match.</p>
+          <p className="px-3 py-4 text-[11px] text-bp-faint">No files match.</p>
         )}
 
         {filtering
@@ -89,8 +84,8 @@ export default function Inspector({
                 key={item.id}
                 onClick={() => onSelect(item.id)}
                 title={item.id}
-                className={`flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors hover:bg-bp-panel ${
-                  item.id === selectedId ? "bg-bp-panel text-bp-accent" : "text-bp-text"
+                className={`flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors hover:bg-bp-hover ${
+                  item.id === selectedId ? "bg-bp-hover text-bp-accent" : "text-bp-text"
                 }`}
               >
                 <Dot id={item.id} />
@@ -107,13 +102,13 @@ export default function Inspector({
                     key={entry.id}
                     onClick={() => onSelect(entry.id)}
                     title={entry.id}
-                    className={`flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors hover:bg-bp-panel ${
-                      entry.id === selectedId ? "bg-bp-panel text-bp-accent" : "text-bp-text"
+                    className={`flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors hover:bg-bp-hover ${
+                      entry.id === selectedId ? "bg-bp-hover text-bp-accent" : "text-bp-text"
                     }`}
                   >
                     <Dot id={entry.id} />
                     <span className="truncate">{entry.label}</span>
-                    <span className="tabular ml-auto shrink-0 text-[9px] text-bp-muted/50">
+                    <span className="tabular ml-auto shrink-0 text-[9px] text-bp-faint">
                       {entry.importedBy.length}/{entry.imports.length}
                     </span>
                   </button>
@@ -123,19 +118,19 @@ export default function Inspector({
       </div>
 
       {selected && (
-        <div className="bp-scroll max-h-72 shrink-0 overflow-y-auto border-t border-bp-rule bg-bp-canvas/60">
+        <div className="bp-scroll max-h-72 shrink-0 overflow-y-auto border-t border-bp-rule bg-bp-canvas">
           <div className="px-3 pt-2.5 pb-1">
             <p className="truncate text-[11px] text-bp-text" title={selected.path}>
               {selected.label}
             </p>
-            <p className="truncate text-[9px] text-bp-muted/60" title={selected.id}>
+            <p className="truncate text-[9px] text-bp-faint" title={selected.id}>
               {selected.directory || "/"}
             </p>
           </div>
 
           <SectionTitle>Imports · {selected.imports.length}</SectionTitle>
           {selected.imports.length === 0 ? (
-            <p className="px-3 pb-1 text-[10px] text-bp-muted/40">Nothing.</p>
+            <p className="px-3 pb-1 text-[10px] text-bp-faint">Nothing.</p>
           ) : (
             selected.imports.map((id) => {
               const entry = index.byId.get(id);
@@ -145,7 +140,7 @@ export default function Inspector({
 
           <SectionTitle>Imported by · {selected.importedBy.length}</SectionTitle>
           {selected.importedBy.length === 0 ? (
-            <p className="px-3 pb-2 text-[10px] text-bp-muted/40">Nothing.</p>
+            <p className="px-3 pb-2 text-[10px] text-bp-faint">Nothing.</p>
           ) : (
             selected.importedBy.map((id) => {
               const entry = index.byId.get(id);

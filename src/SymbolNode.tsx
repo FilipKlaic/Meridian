@@ -1,5 +1,7 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
+import { DEFAULT_HUE } from "./layout";
+
 /**
  * One function, method or class in the call graph. Symbols from outside the
  * focused file are drawn flatter, so the file you are looking at reads as the
@@ -8,7 +10,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 export default function SymbolNode({ data, selected }: NodeProps) {
   const label = String(data.label ?? "");
   const detail = String(data.detail ?? "");
-  const hue = Number(data.hue ?? 190);
+  const hue = Number(data.hue ?? DEFAULT_HUE);
   const external = Boolean(data.external);
   const exported = Boolean(data.exported);
 
@@ -34,7 +36,7 @@ export default function SymbolNode({ data, selected }: NodeProps) {
         {exported && (
           <span
             title="exported"
-            className="shrink-0 font-mono text-[8px] leading-none tracking-widest text-bp-accent/70"
+            className="shrink-0 font-mono text-[8px] leading-none tracking-widest text-bp-accent"
           >
             EX
           </span>

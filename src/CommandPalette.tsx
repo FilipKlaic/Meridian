@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Highlight from "./Highlight";
 import { rank } from "./fuzzy";
 import type { GraphIndex } from "./graphIndex";
-import { directoryHue } from "./layout";
+import { directoryColor } from "./layout";
 
 export type PaletteAction = {
   id: string;
@@ -103,11 +103,11 @@ export default function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex justify-center bg-bp-void/70 pt-[14vh] backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex justify-center bg-bp-scrim/15 pt-[14vh] backdrop-blur-[2px]"
       onMouseDown={onClose}
     >
       <div
-        className="flex h-fit max-h-[62vh] w-[min(560px,88vw)] flex-col border border-bp-rule bg-bp-canvas shadow-2xl shadow-black/60"
+        className="flex h-fit max-h-[62vh] w-[min(560px,88vw)] flex-col border border-bp-rule bg-bp-panel shadow-2xl shadow-bp-scrim/30"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <input
@@ -117,12 +117,12 @@ export default function CommandPalette({
           onKeyDown={onKeyDown}
           placeholder="Jump to a file, or run a command…"
           spellCheck={false}
-          className="shrink-0 border-b border-bp-rule bg-transparent px-3.5 py-3 font-mono text-[12px] text-bp-text placeholder:text-bp-muted/40 focus:outline-none"
+          className="shrink-0 border-b border-bp-rule bg-transparent px-3.5 py-3 font-mono text-[12px] text-bp-text placeholder:text-bp-faint focus:outline-none"
         />
 
         <div ref={listRef} className="bp-scroll min-h-0 flex-1 overflow-y-auto py-1">
           {results.length === 0 && (
-            <p className="px-3.5 py-6 text-center text-[11px] text-bp-muted/50">Nothing matches.</p>
+            <p className="px-3.5 py-6 text-center text-[11px] text-bp-faint">Nothing matches.</p>
           )}
 
           {results.map(({ item, match }, i) => {
@@ -134,17 +134,17 @@ export default function CommandPalette({
                 onMouseMove={() => setActive(i)}
                 onClick={() => choose(item)}
                 className={`flex w-full items-center gap-2.5 px-3.5 py-1.5 text-left font-mono text-[11px] ${
-                  isActive ? "bg-bp-panel" : ""
+                  isActive ? "bg-bp-hover" : ""
                 } ${item.kind === "action" && item.action.disabled ? "opacity-35" : ""}`}
               >
                 {item.kind === "file" ? (
                   <>
                     <span
                       className="size-1.5 shrink-0"
-                      style={{ background: `hsl(${directoryHue(item.id)} 70% 58%)` }}
+                      style={{ background: directoryColor(item.id) }}
                     />
                     <span className="truncate text-bp-text">{item.label}</span>
-                    <span className="ml-auto shrink-0 truncate text-[9px] text-bp-muted/50">
+                    <span className="ml-auto shrink-0 truncate text-[9px] text-bp-faint">
                       <Highlight text={item.text} positions={match.positions} />
                     </span>
                   </>
@@ -155,7 +155,7 @@ export default function CommandPalette({
                       <Highlight text={item.text} positions={match.positions} />
                     </span>
                     {item.action.hint && (
-                      <span className="ml-auto shrink-0 text-[9px] tracking-widest text-bp-muted/50 uppercase">
+                      <span className="ml-auto shrink-0 text-[9px] tracking-widest text-bp-faint uppercase">
                         {item.action.hint}
                       </span>
                     )}
@@ -166,7 +166,7 @@ export default function CommandPalette({
           })}
         </div>
 
-        <div className="flex shrink-0 gap-4 border-t border-bp-rule px-3.5 py-1.5 text-[9px] tracking-widest text-bp-muted/50 uppercase">
+        <div className="flex shrink-0 gap-4 border-t border-bp-rule px-3.5 py-1.5 text-[9px] tracking-widest text-bp-faint uppercase">
           <span>↑↓ navigate</span>
           <span>⏎ select</span>
           <span>esc close</span>

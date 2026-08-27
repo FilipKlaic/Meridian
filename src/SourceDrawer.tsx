@@ -88,13 +88,13 @@ export default function SourceDrawer({
   const gutterWidth = String(view ? view.end_line : 1).length;
 
   return (
-    <aside className="flex w-[30rem] shrink-0 flex-col border-l border-bp-rule bg-bp-void/70">
+    <aside className="flex w-[30rem] shrink-0 flex-col border-l border-bp-rule bg-bp-void">
       <header className="flex shrink-0 items-start gap-2 border-b border-bp-rule px-3 py-2.5">
         <div className="min-w-0 flex-1">
           <p className="truncate font-mono text-[11px] text-bp-text" title={title}>
             {title}
           </p>
-          <p className="truncate font-mono text-[9px] text-bp-muted/60" title={target.path}>
+          <p className="truncate font-mono text-[9px] text-bp-faint" title={target.path}>
             {target.file}
             {view && !target.name ? "" : view ? ` · ${view.start_line}–${view.end_line}` : ""}
           </p>
@@ -132,10 +132,10 @@ export default function SourceDrawer({
       </header>
 
       <div className="bp-scroll min-h-0 flex-1 overflow-auto">
-        {loading && <p className="px-3 py-4 text-[11px] text-bp-muted/50">Reading…</p>}
+        {loading && <p className="px-3 py-4 text-[11px] text-bp-faint">Reading…</p>}
 
         {error && (
-          <p className="m-3 border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300">
+          <p className="m-3 border border-bp-warn/40 bg-bp-warn/10 px-3 py-2 text-[11px] text-bp-warn-ink">
             {error}
           </p>
         )}
@@ -145,19 +145,19 @@ export default function SourceDrawer({
             {lines.map((line, i) => (
               <div key={i} className="flex">
                 <span
-                  className="tabular mr-3 shrink-0 text-right text-bp-muted/35 select-none"
+                  className="tabular mr-3 shrink-0 text-right text-bp-faint select-none"
                   style={{ width: `${gutterWidth}ch` }}
                 >
                   {view.start_line + i}
                 </span>
-                <span className="whitespace-pre text-bp-text/90">{line || " "}</span>
+                <span className="whitespace-pre text-bp-text">{line || " "}</span>
               </div>
             ))}
           </pre>
         )}
 
         {view?.truncated && (
-          <p className="px-3 pb-3 text-[10px] text-bp-muted/50">
+          <p className="px-3 pb-3 text-[10px] text-bp-faint">
             Long file — showing the first {view.end_line} lines.
           </p>
         )}

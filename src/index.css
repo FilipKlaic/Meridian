@@ -1,17 +1,27 @@
 @import "tailwindcss";
 
 @theme {
-  /* Blueprint palette: cyan instrumentation on deep navy. */
-  --color-bp-void: #040c16;
-  --color-bp-canvas: #06101c;
-  --color-bp-panel: #0d2033;
-  --color-bp-panel-hi: #123047;
-  --color-bp-rule: #16324a;
-  --color-bp-edge: #2a5a7d;
-  --color-bp-accent: #38bdf8;
-  --color-bp-accent-dim: #0e7490;
-  --color-bp-text: #d7ecfa;
-  --color-bp-muted: #6f93ad;
+  /* Drafting paper: warm ink and earth tones on unbleached stock. */
+  --color-bp-void: #f1e9d9; /* chrome ground — header and side panels */
+  --color-bp-canvas: #fbf7ef; /* the drafting surface itself */
+  --color-bp-panel: #fffdf8; /* a raised card, i.e. a node */
+  --color-bp-hover: #ebe1cd; /* row hover and active selection */
+  --color-bp-rule: #dbcfb6; /* hairlines and borders */
+  --color-bp-edge: #8a7a60; /* graph edge strokes */
+  --color-bp-accent: #9d3f1a; /* clay: selection, focus, interaction */
+  --color-bp-text: #2f2a22; /* warm near-black */
+  --color-bp-muted: #6f6250;
+  /* One faint tier for secondary metadata — paths, counts, key hints. In the
+     dark theme these were washed-out alphas of the muted ink; on paper that
+     bleaches them out, so it is a colour of its own with a floor to hold. */
+  --color-bp-faint: #807460;
+
+  /* A stale graph is signalled by fill, not just hue, so it stays distinct from
+     the clay accent it sits beside. */
+  --color-bp-warn: #965d0c;
+  --color-bp-warn-ink: #593507;
+  --color-bp-danger: #a33127;
+  --color-bp-scrim: #4a3f2e; /* the wash behind a modal */
 
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo,
     Consolas, monospace;
@@ -25,8 +35,8 @@ body,
 
 body {
   background: var(--color-bp-canvas);
-  /* Instrument panels read better without font smoothing turned up. */
-  -webkit-font-smoothing: antialiased;
+  /* Deliberately not `antialiased`: dark text on a light ground thins out badly
+     under greyscale smoothing, which is what makes a light theme look washed. */
 }
 
 /* Readouts should not jitter as digits change. */
@@ -38,10 +48,10 @@ body {
    render before a graph exists. */
 .bp-grid {
   background-image:
-    linear-gradient(rgba(56, 189, 248, 0.1) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56, 189, 248, 0.1) 1px, transparent 1px),
-    linear-gradient(rgba(56, 189, 248, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56, 189, 248, 0.045) 1px, transparent 1px);
+    linear-gradient(rgba(122, 102, 74, 0.16) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(122, 102, 74, 0.16) 1px, transparent 1px),
+    linear-gradient(rgba(122, 102, 74, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(122, 102, 74, 0.07) 1px, transparent 1px);
   background-size:
     108px 108px,
     108px 108px,
@@ -52,24 +62,26 @@ body {
 /* ---------------------------------------------------------------- nodes -- */
 
 .bp-node {
-  --edge: hsl(var(--hue) 70% 60%);
+  --edge: hsl(var(--hue) 52% 36%);
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--edge) 12%, var(--color-bp-panel)) 0%,
-    var(--color-bp-panel) 100%
+    var(--color-bp-panel) 0%,
+    color-mix(in srgb, var(--edge) 9%, var(--color-bp-panel)) 100%
   );
-  border: 1px solid color-mix(in srgb, var(--edge) 38%, transparent);
+  border: 1px solid color-mix(in srgb, var(--edge) 62%, transparent);
+  /* Two shadows: a tight contact edge, then a soft warm cast, so a card sits on
+     the paper rather than floating over a hole in it. */
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--edge) 22%, transparent),
-    0 6px 16px -8px #000;
+    0 1px 1px rgba(74, 63, 46, 0.07),
+    0 6px 14px -10px rgba(74, 63, 46, 0.45);
 }
 
 .bp-node.is-selected {
   border-color: var(--color-bp-accent);
+  background: color-mix(in srgb, var(--color-bp-accent) 7%, var(--color-bp-panel));
   box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--color-bp-accent) 40%, transparent),
-    0 0 0 1px color-mix(in srgb, var(--color-bp-accent) 35%, transparent),
-    0 0 22px -4px color-mix(in srgb, var(--color-bp-accent) 55%, transparent);
+    0 0 0 2px color-mix(in srgb, var(--color-bp-accent) 24%, transparent),
+    0 6px 16px -10px rgba(74, 63, 46, 0.55);
 }
 
 /* Corner ticks: the detail that reads as "technical drawing". */
@@ -119,7 +131,8 @@ body {
 }
 .lod-far .bp-node {
   background: var(--edge);
-  opacity: 0.85;
+  box-shadow: none;
+  opacity: 0.9;
 }
 
 /* Strokes are scaled by the viewport transform, so a 1px edge all but vanishes
@@ -137,15 +150,16 @@ body {
 
 /* Symbols from outside the focused file sit back a little. */
 .bp-node.is-external {
-  background: var(--color-bp-canvas);
+  background: transparent;
   border-style: dashed;
+  box-shadow: none;
 }
 
 /* A call matched by method name alone, not resolved. Dashed so the picture never
    claims more certainty than the analysis has. */
 .react-flow__edge.is-guess .react-flow__edge-path {
   stroke-dasharray: 4 4;
-  opacity: 0.75;
+  opacity: 0.7;
 }
 
 /* ------------------------------------------------------- focus mode ------- */
@@ -154,11 +168,13 @@ body {
 .react-flow__edge {
   transition: opacity 140ms ease;
 }
+/* Held higher than the dark theme's: on a light ground, fading toward the paper
+   erases a node far faster than fading toward black did. */
 .react-flow__node.is-dimmed {
-  opacity: 0.2;
+  opacity: 0.22;
 }
 .react-flow__edge.is-dimmed {
-  opacity: 0.08;
+  opacity: 0.13;
 }
 
 /* Thin, unobtrusive scrollbars for the side panels. */

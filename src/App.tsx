@@ -30,13 +30,16 @@ import SymbolNode from "./SymbolNode";
 import { EMPTY_CALL_VIEW, toCallView } from "./callLayout";
 import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
 import { buildIndex } from "./graphIndex";
-import { toFlowGraph } from "./layout";
+import { DEFAULT_HUE, hueInk, toFlowGraph } from "./layout";
 import type { FileStamp, Freshness, ProjectGraph } from "./types";
 
 const nodeTypes = { file: FileNode, symbol: SymbolNode };
 const edgeTypes = { routed: RoutedEdge };
 
 type Tab = "imports" | "calls";
+
+/** `--color-bp-accent`, for the few places a colour has to reach SVG. */
+const ACCENT = "#9d3f1a";
 
 const MIN_ZOOM = 0.05;
 /** Never zoom past 1:1 when framing, however small the project is. */
@@ -75,11 +78,11 @@ function Readout({
   return (
     <span className="flex items-baseline gap-1.5" title={title}>
       <span
-        className={`text-[9px] tracking-widest uppercase ${warn ? "text-amber-500/70" : "text-bp-muted/60"}`}
+        className={`text-[9px] tracking-widest uppercase ${warn ? "text-bp-warn/80" : "text-bp-faint"}`}
       >
         {label}
       </span>
-      <span className={`tabular ${warn ? "text-amber-300" : "text-bp-text"}`}>{value}</span>
+      <span className={`tabular ${warn ? "text-bp-warn-ink" : "text-bp-text"}`}>{value}</span>
     </span>
   );
 }
@@ -98,7 +101,7 @@ function TabButton({
       onClick={onClick}
       className={`px-2.5 py-1 text-[10px] tracking-widest uppercase transition-colors ${
         active
-          ? "bg-bp-accent/15 text-bp-accent"
+          ? "bg-bp-accent/12 text-bp-accent"
           : "text-bp-muted hover:text-bp-text"
       }`}
     >
@@ -242,8 +245,8 @@ function Workspace() {
       if (!attached) return { ...edge, className: "is-dimmed" };
       return {
         ...edge,
-        style: { ...edge.style, stroke: "#38bdf8", strokeWidth: 1.6 },
-        markerEnd: { ...(edge.markerEnd as EdgeMarker), color: "#38bdf8" },
+        style: { ...edge.style, stroke: ACCENT, strokeWidth: 1.6 },
+        markerEnd: { ...(edge.markerEnd as EdgeMarker), color: ACCENT },
         zIndex: 1,
       };
     });
@@ -264,8 +267,8 @@ function Workspace() {
       if (edge.source === focusId || edge.target === focusId) {
         return {
           ...edge,
-          style: { ...edge.style, stroke: "#38bdf8", strokeWidth: 1.6 },
-          markerEnd: { ...(edge.markerEnd as EdgeMarker), color: "#38bdf8" },
+          style: { ...edge.style, stroke: ACCENT, strokeWidth: 1.6 },
+          markerEnd: { ...(edge.markerEnd as EdgeMarker), color: ACCENT },
           zIndex: 1,
         };
       }
@@ -480,7 +483,7 @@ function Workspace() {
       {/* The traffic lights float over this bar, so it doubles as the drag region. */}
       <header
         data-tauri-drag-region
-        className="flex shrink-0 items-center gap-3 border-b border-bp-rule bg-bp-void/90 py-2.5 pr-4 pl-[86px]"
+        className="flex shrink-0 items-center gap-3 border-b border-bp-rule bg-bp-void py-2.5 pr-4 pl-[86px]"
       >
         <span className="text-[11px] font-semibold tracking-[0.22em] text-bp-accent select-none">
           MERIDIAN
@@ -498,10 +501,10 @@ function Workspace() {
           onClick={scan}
           disabled={!projectPath || scanning}
           title={freshness && stale > 0 ? describeChanges(freshness) : undefined}
-          className={`px-2.5 py-1 text-[10px] tracking-widest uppercase transition-colors disabled:cursor-not-allowed disabled:border-bp-rule disabled:bg-transparent disabled:text-bp-muted/40 ${
+          className={`px-2.5 py-1 text-[10px] tracking-widest uppercase transition-colors disabled:cursor-not-allowed disabled:border-bp-rule disabled:bg-transparent disabled:text-bp-faint ${
             stale > 0
-              ? "border border-amber-500/60 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
-              : "border border-bp-accent/60 bg-bp-accent/10 text-bp-accent hover:bg-bp-accent/20"
+              ? "border border-bp-warn bg-bp-warn text-bp-canvas hover:bg-bp-warn-ink hover:border-bp-warn-ink"
+              : "border border-bp-accent/50 bg-bp-accent/8 text-bp-accent hover:bg-bp-accent/16"
           }`}
         >
           {scanning ? "Scanning" : scannedAt ? "Rescan" : "Scan"}
@@ -518,7 +521,7 @@ function Workspace() {
 
         <button
           onClick={() => setPaletteOpen(true)}
-          className={`${TOOLBAR_BUTTON} text-bp-muted/70`}
+          className={`${TOOLBAR_BUTTON} text-bp-muted`}
           title="Command palette"
         >
           ⌘K
@@ -566,7 +569,7 @@ function Workspace() {
       </header>
 
       {error && (
-        <div className="shrink-0 border-b border-red-900/60 bg-red-950/50 px-4 py-2 text-[11px] text-red-300">
+        <div className="shrink-0 border-b border-bp-danger/40 bg-bp-danger/10 px-4 py-2 text-[11px] text-bp-danger">
           {error}
         </div>
       )}
@@ -607,7 +610,7 @@ function Workspace() {
               edgeTypes={edgeTypes}
               minZoom={0.05}
               proOptions={{ hideAttribution: true }}
-              colorMode="dark"
+              colorMode="light"
             >
               {/* Fine and coarse rules together read as drafting paper. */}
               <Background
@@ -615,23 +618,23 @@ function Workspace() {
                 variant={BackgroundVariant.Lines}
                 gap={18}
                 lineWidth={1}
-                color="rgba(56,189,248,0.045)"
+                color="rgba(122,102,74,0.07)"
               />
               <Background
                 id="coarse"
                 variant={BackgroundVariant.Lines}
                 gap={108}
                 lineWidth={1}
-                color="rgba(56,189,248,0.1)"
+                color="rgba(122,102,74,0.16)"
               />
               <LevelOfDetail />
               <CanvasHud onFit={() => frameGraph(320)} />
               <MiniMap
                 pannable
                 zoomable
-                nodeColor={(node) => `hsl(${Number(node.data?.hue ?? 190)} 70% 55%)`}
+                nodeColor={(node) => hueInk(Number(node.data?.hue ?? DEFAULT_HUE))}
                 nodeStrokeWidth={0}
-                maskColor="rgba(4,12,22,0.72)"
+                maskColor="rgba(251,247,239,0.72)"
               />
             </ReactFlow>
           ) : (
@@ -651,7 +654,7 @@ function Workspace() {
                             : "No file selected"
                         : "Awaiting scan"}
               </p>
-              <p className="max-w-md text-[11px] text-bp-muted/60">
+              <p className="max-w-md text-[11px] text-bp-faint">
                 {!projectPath
                   ? "Open a TypeScript project to begin."
                   : !graph

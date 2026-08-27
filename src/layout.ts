@@ -37,11 +37,14 @@ function extensionOf(label: string): string {
 
 /**
  * A stable hue per directory, so sibling files share a colour and the eye can
- * pick out clusters. Kept inside the teal/cyan/blue/indigo arc to stay within
- * the blueprint palette rather than turning the canvas into confetti.
+ * pick out clusters. Kept inside the rust/ochre/olive/moss arc: earth tones
+ * that sit on warm paper rather than turning the canvas into confetti.
  */
-const HUE_START = 150;
-const HUE_RANGE = 120;
+const HUE_START = 12;
+const HUE_RANGE = 114;
+
+/** Mid-arc, for the rare node that reaches a renderer without a hue. */
+export const DEFAULT_HUE = HUE_START + HUE_RANGE / 2;
 
 export function directoryHue(id: string): number {
   const slash = id.lastIndexOf("/");
@@ -52,6 +55,21 @@ export function directoryHue(id: string): number {
     hash = (hash * 31 + directory.charCodeAt(i)) >>> 0;
   }
   return HUE_START + (hash % HUE_RANGE);
+}
+
+/**
+ * A directory hue as a paintable colour. Saturation and lightness live here
+ * rather than at each call site so a node, its inspector dot and its minimap
+ * blip are guaranteed to be the same ink.
+ */
+export function hueInk(hue: number): string {
+  // 36% lightness, not 40%: yellow-greens are intrinsically lighter at the same
+  // HSL lightness, and 40% put the middle of the arc under 3:1 against paper.
+  return `hsl(${hue} 52% 36%)`;
+}
+
+export function directoryColor(id: string): string {
+  return hueInk(directoryHue(id));
 }
 
 /** The metrics line under the file name, e.g. `tsx · 4 in · 0 out`. */
@@ -160,7 +178,7 @@ export function routedEdge(
     // Right-angle routing: schematic rather than organic.
     type: "routed",
     data: { waypoints: layout.waypoints(source, target) },
-    markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: "#2a5a7d" },
+    markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: "#8a7a60" },
     // Stroke lives in CSS so the zoom bands can thicken it as the view pulls back;
     // an inline style here would outrank them. Focus highlighting sets one on
     // purpose, to outrank exactly that.
