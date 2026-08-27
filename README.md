@@ -1,5 +1,7 @@
 # Meridian
 
+[![CI](https://github.com/FilipKlaic/Meridian/actions/workflows/ci.yml/badge.svg)](https://github.com/FilipKlaic/Meridian/actions/workflows/ci.yml)
+
 A desktop app for looking at how a TypeScript codebase fits together. Point it at a
 project folder and it charts which files import which, which functions call which, and
 shows you the source behind any of it — without leaving the app.
@@ -127,8 +129,12 @@ src-tauri/src/          Rust backend
 
 ```bash
 cd src-tauri && cargo test          # scanner, resolution and source-reading tests
+cd src-tauri && cargo clippy --all-targets -- -D warnings
+cd src-tauri && cargo fmt
 npm run build                       # typecheck and build the frontend
 ```
+
+CI runs all four on every push and pull request.
 
 There is a CLI for exercising the scanner without launching the app, which is the
 quickest way to see what a real project produces:

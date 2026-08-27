@@ -16,7 +16,10 @@ fn main() {
     let started = Instant::now();
     match meridian_lib::scanner::scan(Path::new(&root)) {
         Ok(graph) if as_json => {
-            println!("{}", serde_json::to_string_pretty(&graph).expect("serialize"));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&graph).expect("serialize")
+            );
         }
         Ok(graph) => {
             println!(

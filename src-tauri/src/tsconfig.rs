@@ -357,7 +357,12 @@ mod tests {
         for (key, targets) in patterns {
             map.insert(
                 key.to_string(),
-                Value::Array(targets.into_iter().map(|t| Value::String(t.into())).collect()),
+                Value::Array(
+                    targets
+                        .into_iter()
+                        .map(|t| Value::String(t.into()))
+                        .collect(),
+                ),
             );
         }
         Config {

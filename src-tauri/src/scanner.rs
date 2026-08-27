@@ -198,10 +198,14 @@ fn analyse_calls(
 
         // Reuse the very same specifier resolution the import graph is built
         // from, so a call can never bind to a file an import would not.
-        let resolve_specifier =
-            |specifier: &str| -> Option<String> { ids.get(&resolver.resolve(dir, specifier)?).cloned() };
-        let imports =
-            symbols::collect_imported_names(tree.root_node(), source.as_bytes(), &resolve_specifier);
+        let resolve_specifier = |specifier: &str| -> Option<String> {
+            ids.get(&resolver.resolve(dir, specifier)?).cloned()
+        };
+        let imports = symbols::collect_imported_names(
+            tree.root_node(),
+            source.as_bytes(),
+            &resolve_specifier,
+        );
 
         let context = CallContext {
             file: file_symbols,
@@ -298,7 +302,9 @@ impl Resolver<'_> {
     }
 
     fn config_for(&self, dir: &Path) -> Option<&tsconfig::Config> {
-        self.configs.iter().find(|config| dir.starts_with(&config.dir))
+        self.configs
+            .iter()
+            .find(|config| dir.starts_with(&config.dir))
     }
 }
 
@@ -614,7 +620,10 @@ mod tests {
             ),
             ("src/b.ts", ""),
         ]);
-        assert_eq!(edge_pairs(&graph), BTreeSet::from([("src/a.ts", "src/b.ts")]));
+        assert_eq!(
+            edge_pairs(&graph),
+            BTreeSet::from([("src/a.ts", "src/b.ts")])
+        );
     }
 
     #[test]
@@ -686,7 +695,10 @@ mod tests {
     #[test]
     fn resolves_bare_specifiers_against_base_url_alone() {
         let (graph, _dir) = scan_fixture(&[
-            ("tsconfig.json", r#"{ "compilerOptions": { "baseUrl": "src" } }"#),
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": "src" } }"#,
+            ),
             ("src/app.ts", r#"import { helper } from "util/helper";"#),
             ("src/util/helper.ts", ""),
         ]);
@@ -732,7 +744,10 @@ mod tests {
                 "packages/b/tsconfig.json",
                 r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
             ),
-            ("packages/a/src/app.ts", r#"import { thing } from "@/thing";"#),
+            (
+                "packages/a/src/app.ts",
+                r#"import { thing } from "@/thing";"#,
+            ),
             ("packages/a/src/thing.ts", ""),
             ("packages/b/src/thing.ts", ""),
         ]);
@@ -867,11 +882,7 @@ mod call_tests {
                 export function main() { helper(); }
                 "#,
             )]),
-            BTreeSet::from([(
-                "src/a.ts#main".into(),
-                "src/a.ts#helper".into(),
-                "resolved"
-            )])
+            BTreeSet::from([("src/a.ts#main".into(), "src/a.ts#helper".into(), "resolved")])
         );
     }
 
@@ -899,8 +910,16 @@ mod call_tests {
                 ("src/db.ts", "export default function connect() {}"),
             ]),
             BTreeSet::from([
-                ("src/main.ts#run".into(), "src/api.ts#fetchUser".into(), "resolved"),
-                ("src/main.ts#run".into(), "src/api.ts#save".into(), "resolved"),
+                (
+                    "src/main.ts#run".into(),
+                    "src/api.ts#fetchUser".into(),
+                    "resolved"
+                ),
+                (
+                    "src/main.ts#run".into(),
+                    "src/api.ts#save".into(),
+                    "resolved"
+                ),
             ])
         );
     }
@@ -964,7 +983,10 @@ mod call_tests {
                     export function go() { service.refresh(); }
                     "#,
                 ),
-                ("src/svc.ts", "export class Service { refresh() {} }\nexport const service = new Service();"),
+                (
+                    "src/svc.ts",
+                    "export class Service { refresh() {} }\nexport const service = new Service();"
+                ),
             ]),
             BTreeSet::from([(
                 "src/a.ts#go".into(),
@@ -986,8 +1008,10 @@ mod call_tests {
             ("src/c.ts", "export class Store { get() {} }"),
         ]);
         assert!(
-            found.iter().all(|(_, target, _)| !target.ends_with("#Cache.get")
-                && !target.ends_with("#Store.get")),
+            found
+                .iter()
+                .all(|(_, target, _)| !target.ends_with("#Cache.get")
+                    && !target.ends_with("#Store.get")),
             "{found:?}"
         );
     }
@@ -1021,7 +1045,11 @@ mod call_tests {
             ]),
             BTreeSet::from([
                 ("src/a.ts#go".into(), "src/a.ts#render".into(), "resolved"),
-                ("src/a.ts#render".into(), "src/a.ts#render2".into(), "resolved"),
+                (
+                    "src/a.ts#render".into(),
+                    "src/a.ts#render2".into(),
+                    "resolved"
+                ),
             ])
         );
     }

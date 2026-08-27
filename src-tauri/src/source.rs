@@ -26,7 +26,11 @@ pub struct SourceView {
 }
 
 /// Read a whole file, or just one declaration in it.
-pub fn read(path: &Path, name: Option<&str>, container: Option<&str>) -> Result<SourceView, String> {
+pub fn read(
+    path: &Path,
+    name: Option<&str>,
+    container: Option<&str>,
+) -> Result<SourceView, String> {
     let source = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
 
@@ -126,7 +130,10 @@ export class Store {
         let dir = tempfile::tempdir().unwrap();
         let path = write(&dir, "a.ts", SAMPLE);
         let view = read(&path, Some("alpha"), None).expect("read");
-        assert_eq!(view.text, "export function alpha(a: number) {\n  return a + 1;\n}");
+        assert_eq!(
+            view.text,
+            "export function alpha(a: number) {\n  return a + 1;\n}"
+        );
         assert_eq!((view.start_line, view.end_line), (3, 5));
     }
 
@@ -144,7 +151,10 @@ export class Store {
         let dir = tempfile::tempdir().unwrap();
         let path = write(&dir, "a.ts", SAMPLE);
         let view = read(&path, Some("add"), Some("Store")).expect("read");
-        assert_eq!(view.text, "add(item: string) {\n    this.items.push(item);\n  }");
+        assert_eq!(
+            view.text,
+            "add(item: string) {\n    this.items.push(item);\n  }"
+        );
         assert_eq!((view.start_line, view.end_line), (12, 14));
     }
 
@@ -156,7 +166,11 @@ export class Store {
         let before = read(&path, Some("alpha"), None).expect("read");
         assert_eq!(before.start_line, 3);
 
-        write(&dir, "a.ts", &format!("// a new line\n// and another\n{SAMPLE}"));
+        write(
+            &dir,
+            "a.ts",
+            &format!("// a new line\n// and another\n{SAMPLE}"),
+        );
         let after = read(&path, Some("alpha"), None).expect("read");
         assert_eq!(after.start_line, 5, "declaration moved down two lines");
         assert_eq!(after.text, before.text, "same code, found at its new home");

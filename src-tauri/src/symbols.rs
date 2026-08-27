@@ -75,7 +75,8 @@ fn field_text<'a>(node: TsNode, field: &str, src: &'a [u8]) -> Option<&'a str> {
 
 /// Is this declaration directly under an `export` statement?
 fn is_exported(node: TsNode) -> bool {
-    node.parent().is_some_and(|p| p.kind() == "export_statement")
+    node.parent()
+        .is_some_and(|p| p.kind() == "export_statement")
 }
 
 fn symbol_id(file: &str, name: &str) -> String {
@@ -265,12 +266,7 @@ fn walk_imports(
     }
 }
 
-fn read_import_clause(
-    clause: TsNode,
-    src: &[u8],
-    file: &str,
-    out: &mut HashMap<String, Imported>,
-) {
+fn read_import_clause(clause: TsNode, src: &[u8], file: &str, out: &mut HashMap<String, Imported>) {
     let mut cursor = clause.walk();
     for child in clause.named_children(&mut cursor) {
         match child.kind() {
@@ -424,7 +420,10 @@ fn resolve_callee(
         }
 
         "member_expression" => {
-            let property = callee.child_by_field_name("property")?.utf8_text(src).ok()?;
+            let property = callee
+                .child_by_field_name("property")?
+                .utf8_text(src)
+                .ok()?;
             let object = callee.child_by_field_name("object")?;
 
             // `this.method()` inside a class resolves exactly.
