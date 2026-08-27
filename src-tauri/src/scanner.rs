@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use ignore::WalkBuilder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::symbols::{self, Call, CallContext, FileSymbols, Symbol};
@@ -32,6 +32,33 @@ pub struct ProjectGraph {
     pub symbols: Vec<Symbol>,
     /// Resolved calls between them.
     pub calls: Vec<Call>,
+    /// The state of every file this scan read, so a later check can tell whether
+    /// the graph still describes what is on disk.
+    pub fingerprint: Vec<FileStamp>,
+}
+
+/// Enough of a file's state to notice it changed, without reading it back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileStamp {
+    /// Project-relative path.
+    pub id: String,
+    /// Milliseconds since the Unix epoch, or 0 when the filesystem will not say.
+    pub modified: i64,
+    pub size: u64,
+}
+
+/// What has changed under a project since a fingerprint was taken.
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Freshness {
+    pub added: usize,
+    pub removed: usize,
+    pub modified: usize,
+}
+
+impl Freshness {
+    pub fn total(&self) -> usize {
+        self.added + self.removed + self.modified
+    }
 }
 
 /// Extensions we parse. Declaration files (`.d.ts`) come along for the ride since
@@ -55,7 +82,9 @@ pub fn scan(root: &Path) -> Result<ProjectGraph, String> {
         return Err(format!("{} is not a directory", root.display()));
     }
 
-    let Walk { files, configs } = collect_files(&root);
+    let walk = collect_files(&root);
+    let fingerprint = stamp(&root, &walk);
+    let Walk { files, configs } = walk;
 
     // Every file we know about, so imports can only resolve to real project files.
     let known: HashSet<PathBuf> = files.iter().cloned().collect();
@@ -142,7 +171,66 @@ pub fn scan(root: &Path) -> Result<ProjectGraph, String> {
         edges,
         symbols,
         calls,
+        fingerprint,
     })
+}
+
+/// Compare what is on disk now against the fingerprint a scan left behind.
+///
+/// This deliberately does not trust wall-clock time. Comparing file times against
+/// the moment of the scan would call a whole tree stale after a `git clone`, and
+/// would miss a file restored to an older timestamp; comparing each file against
+/// its own recorded state does neither.
+pub fn compare(root: &Path, previous: &[FileStamp]) -> Result<Freshness, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("cannot open {}: {e}", root.display()))?;
+
+    let current = stamp(&root, &collect_files(&root));
+    let before: HashMap<&str, &FileStamp> = previous
+        .iter()
+        .map(|stamp| (stamp.id.as_str(), stamp))
+        .collect();
+
+    let mut freshness = Freshness::default();
+    let mut matched = 0usize;
+    for stamp in &current {
+        match before.get(stamp.id.as_str()) {
+            None => freshness.added += 1,
+            Some(old) => {
+                matched += 1;
+                if old.modified != stamp.modified || old.size != stamp.size {
+                    freshness.modified += 1;
+                }
+            }
+        }
+    }
+    freshness.removed = previous.len().saturating_sub(matched);
+
+    Ok(freshness)
+}
+
+/// Record the state of every file a scan reads — sources and the `tsconfig.json`
+/// files that decide where their imports point, since editing an alias changes
+/// the graph just as much as editing an import.
+fn stamp(root: &Path, walk: &Walk) -> Vec<FileStamp> {
+    walk.files
+        .iter()
+        .chain(&walk.configs)
+        .map(|path| {
+            let metadata = std::fs::metadata(path).ok();
+            FileStamp {
+                id: relative_id(root, path),
+                modified: metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|since| since.as_millis() as i64)
+                    .unwrap_or(0),
+                size: metadata.map(|metadata| metadata.len()).unwrap_or(0),
+            }
+        })
+        .collect()
 }
 
 /// Second half of the scan: what each file declares, and which declarations call
@@ -813,6 +901,154 @@ mod tests {
             ("src/lazy.ts", ""),
         ]);
         assert!(graph.edges.is_empty(), "{:?}", graph.edges);
+    }
+}
+
+#[cfg(test)]
+mod freshness_tests {
+    use super::tests::scan_fixture;
+    use super::{compare, Freshness};
+    use std::fs;
+    use std::path::Path;
+
+    /// Give a file a modification time far enough from the fixture's own that no
+    /// filesystem timestamp granularity can hide the difference.
+    fn touch(path: &Path) {
+        let contents = fs::read(path).expect("read");
+        fs::write(path, contents).expect("write");
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(later))
+            .expect("set mtime");
+    }
+
+    #[test]
+    fn an_untouched_project_is_fresh() {
+        let (graph, dir) = scan_fixture(&[
+            ("tsconfig.json", "{}"),
+            ("src/a.ts", "export function a() {}"),
+            ("src/b.ts", ""),
+        ]);
+        assert_eq!(
+            compare(dir.path(), &graph.fingerprint).expect("compare"),
+            Freshness::default()
+        );
+    }
+
+    #[test]
+    fn counts_an_edit_without_consulting_the_clock() {
+        let (graph, dir) =
+            scan_fixture(&[("src/a.ts", "export function a() {}"), ("src/b.ts", "")]);
+        fs::write(dir.path().join("src/a.ts"), "export function a() { b(); }").expect("write");
+        assert_eq!(
+            compare(dir.path(), &graph.fingerprint).expect("compare"),
+            Freshness {
+                modified: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn notices_an_edit_that_keeps_the_same_length() {
+        // Same size, different mtime: the timestamp is what catches this one.
+        let (graph, dir) = scan_fixture(&[("src/a.ts", "const x = 1;")]);
+        let path = dir.path().join("src/a.ts");
+        fs::write(&path, "const y = 2;").expect("write");
+        touch(&path);
+        assert_eq!(
+            compare(dir.path(), &graph.fingerprint).expect("compare"),
+            Freshness {
+                modified: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn counts_added_and_removed_files() {
+        let (graph, dir) = scan_fixture(&[("src/a.ts", ""), ("src/gone.ts", "")]);
+        fs::remove_file(dir.path().join("src/gone.ts")).expect("remove");
+        fs::write(dir.path().join("src/new.ts"), "").expect("write");
+        fs::write(dir.path().join("src/also-new.tsx"), "").expect("write");
+        assert_eq!(
+            compare(dir.path(), &graph.fingerprint).expect("compare"),
+            Freshness {
+                added: 2,
+                removed: 1,
+                modified: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn a_changed_tsconfig_counts_because_it_moves_edges() {
+        let (graph, dir) = scan_fixture(&[
+            ("tsconfig.json", r#"{ "compilerOptions": {} }"#),
+            ("src/a.ts", r#"import { b } from "@/b";"#),
+            ("src/b.ts", ""),
+        ]);
+        assert!(graph.edges.is_empty(), "{:?}", graph.edges);
+
+        fs::write(
+            dir.path().join("tsconfig.json"),
+            r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+        )
+        .expect("write");
+        assert_eq!(
+            compare(dir.path(), &graph.fingerprint).expect("compare"),
+            Freshness {
+                modified: 1,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_files_a_scan_never_reads() {
+        let (graph, dir) = scan_fixture(&[(".gitignore", "build/\n"), ("src/a.ts", "")]);
+        fs::write(dir.path().join("README.md"), "docs").expect("write");
+        fs::create_dir_all(dir.path().join("build")).expect("mkdir");
+        fs::write(dir.path().join("build/out.ts"), "").expect("write");
+        assert_eq!(
+            compare(dir.path(), &graph.fingerprint).expect("compare"),
+            Freshness::default()
+        );
+    }
+
+    #[test]
+    fn survives_the_round_trip_through_the_cache() {
+        // The fingerprint is serialised into the graph, stored as JSON in SQLite,
+        // and handed back as a command argument. A field renamed on one side of
+        // that trip would silently make every file look new, so walk it here.
+        let (graph, dir) = scan_fixture(&[("tsconfig.json", "{}"), ("src/a.ts", "const x = 1;")]);
+        let stored = serde_json::to_string(&graph).expect("serialise the graph");
+
+        #[derive(serde::Deserialize)]
+        struct Cached {
+            fingerprint: Vec<super::FileStamp>,
+        }
+        let cached: Cached = serde_json::from_str(&stored).expect("read the graph back");
+
+        assert_eq!(cached.fingerprint.len(), 2);
+        assert_eq!(
+            compare(dir.path(), &cached.fingerprint).expect("compare"),
+            Freshness::default()
+        );
+
+        fs::write(dir.path().join("src/a.ts"), "const x = 2222;").expect("write");
+        assert_eq!(
+            compare(dir.path(), &cached.fingerprint)
+                .expect("compare")
+                .total(),
+            1
+        );
+    }
+
+    #[test]
+    fn reports_a_project_that_has_gone_away() {
+        let (graph, dir) = scan_fixture(&[("src/a.ts", "")]);
+        let path = dir.path().join("nope");
+        assert!(compare(&path, &graph.fingerprint).is_err());
     }
 }
 

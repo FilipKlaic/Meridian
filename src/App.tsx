@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Background,
@@ -30,7 +31,7 @@ import { EMPTY_CALL_VIEW, toCallView } from "./callLayout";
 import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
 import { buildIndex } from "./graphIndex";
 import { toFlowGraph } from "./layout";
-import type { ProjectGraph } from "./types";
+import type { FileStamp, Freshness, ProjectGraph } from "./types";
 
 const nodeTypes = { file: FileNode, symbol: SymbolNode };
 const edgeTypes = { routed: RoutedEdge };
@@ -51,11 +52,34 @@ function describeAge(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function Readout({ label, value }: { label: string; value: string | number }) {
+/** Spelled-out breakdown behind a change count, for the tooltip. */
+function describeChanges({ added, removed, modified }: Freshness): string {
+  const parts: string[] = [];
+  if (modified) parts.push(`${modified} edited`);
+  if (added) parts.push(`${added} added`);
+  if (removed) parts.push(`${removed} removed`);
+  return parts.length > 0 ? `${parts.join(", ")} since this scan` : "nothing has changed";
+}
+
+function Readout({
+  label,
+  value,
+  warn,
+  title,
+}: {
+  label: string;
+  value: string | number;
+  warn?: boolean;
+  title?: string;
+}) {
   return (
-    <span className="flex items-baseline gap-1.5">
-      <span className="text-[9px] tracking-widest text-bp-muted/60 uppercase">{label}</span>
-      <span className="tabular text-bp-text">{value}</span>
+    <span className="flex items-baseline gap-1.5" title={title}>
+      <span
+        className={`text-[9px] tracking-widest uppercase ${warn ? "text-amber-500/70" : "text-bp-muted/60"}`}
+      >
+        {label}
+      </span>
+      <span className={`tabular ${warn ? "text-amber-300" : "text-bp-text"}`}>{value}</span>
     </span>
   );
 }
@@ -91,8 +115,10 @@ function Workspace() {
   const [graph, setGraph] = useState<ProjectGraph | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Set while the displayed graph came from the cache rather than a fresh scan. */
-  const [cachedAt, setCachedAt] = useState<string | null>(null);
+  /** When the graph on screen was taken, cached or fresh. */
+  const [scannedAt, setScannedAt] = useState<string | null>(null);
+  /** How far the graph on screen has drifted from disk, once we have checked. */
+  const [freshness, setFreshness] = useState<Freshness | null>(null);
   /** Sticky selection, from a click in the graph, the inspector, or the palette. */
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /** Transient, from the pointer being over a node in the graph. */
@@ -166,6 +192,9 @@ function Workspace() {
   );
 
   const showingCalls = tab === "calls";
+
+  /** Files that have changed since the graph was taken; 0 when fresh or unknown. */
+  const stale = freshness ? freshness.added + freshness.removed + freshness.modified : 0;
 
   /**
    * Hover wins over selection, so pointing at the graph always answers first.
@@ -276,12 +305,50 @@ function Workspace() {
     );
   }, [revealRequest, getNode, setCenter, getZoom]);
 
-  /** Show the stored graph for a project, if there is one. */
-  const showCached = useCallback(async (path: string) => {
-    const cached = await loadCachedScan(path);
-    setGraph(cached?.graph ?? null);
-    setCachedAt(cached?.scannedAt ?? null);
+  /**
+   * Ask how far the graph has drifted from disk. Each file is compared against
+   * its own recorded size and modification time rather than against the moment
+   * of the scan, so a `git clone` does not call an untouched tree stale.
+   */
+  const checkFreshness = useCallback(async (path: string, fingerprint?: FileStamp[]) => {
+    if (!fingerprint) {
+      // Cached before fingerprints existed: there is nothing to compare against,
+      // and claiming the graph is current would be a guess.
+      setFreshness(null);
+      return;
+    }
+    try {
+      setFreshness(await invoke<Freshness>("check_freshness", { path, fingerprint }));
+    } catch {
+      // A project that has moved or been deleted does not warrant an error
+      // banner here; asking for a scan will say so plainly enough.
+      setFreshness(null);
+    }
   }, []);
+
+  /** Show the stored graph for a project, if there is one. */
+  const showCached = useCallback(
+    async (path: string) => {
+      const cached = await loadCachedScan(path);
+      setGraph(cached?.graph ?? null);
+      setScannedAt(cached?.scannedAt ?? null);
+      setFreshness(null);
+      if (cached) await checkFreshness(path, cached.graph.fingerprint);
+    },
+    [checkFreshness],
+  );
+
+  // Coming back from the editor is exactly when the graph may have gone stale,
+  // so re-check on focus. The walk only stats files — no parsing — which is
+  // around 80ms on a four-thousand-file project.
+  useEffect(() => {
+    const fingerprint = graph?.fingerprint;
+    if (!projectPath || !fingerprint) return;
+    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) void checkFreshness(projectPath, fingerprint);
+    });
+    return () => void unlisten.then((stop) => stop());
+  }, [projectPath, graph, checkFreshness]);
 
   // Reopen whatever project was last in use, with its graph, so a relaunch does
   // not need a rescan.
@@ -308,7 +375,8 @@ function Workspace() {
       // The old graph belongs to the old folder; drop it rather than show it
       // under a path it did not come from.
       setGraph(null);
-      setCachedAt(null);
+      setScannedAt(null);
+      setFreshness(null);
       await saveLastProject(selected);
       await showCached(selected);
     } catch (err) {
@@ -323,17 +391,21 @@ function Workspace() {
     try {
       const scanned = await invoke<ProjectGraph>("scan_project", { path: projectPath });
       setGraph(scanned);
-      setCachedAt(null);
+      // The graph now matches disk by construction; no need to walk it again to
+      // find that out.
+      setFreshness({ added: 0, removed: 0, modified: 0 });
+      setScannedAt(new Date().toISOString());
       // A failed write should not throw away a scan the user is already looking at.
       try {
-        await saveScan(projectPath, scanned);
+        setScannedAt(await saveScan(projectPath, scanned));
       } catch (err) {
         setError(`Scan finished but could not be cached: ${err}`);
       }
     } catch (err) {
       setError(String(err));
       setGraph(null);
-      setCachedAt(null);
+      setScannedAt(null);
+      setFreshness(null);
     } finally {
       setScanning(false);
     }
@@ -356,7 +428,7 @@ function Workspace() {
       { id: "open", label: "Open project…", hint: "⌘O", run: pickFolder },
       {
         id: "scan",
-        label: cachedAt ? "Rescan project" : "Scan project",
+        label: scannedAt ? "Rescan project" : "Scan project",
         hint: "⌘R",
         disabled: !projectPath || scanning,
         run: scan,
@@ -374,7 +446,7 @@ function Workspace() {
         run: () => setInspectorOpen((value) => !value),
       },
     ],
-    [pickFolder, scan, cachedAt, projectPath, scanning, inspectorOpen, showingCalls],
+    [pickFolder, scan, scannedAt, projectPath, scanning, inspectorOpen, showingCalls],
   );
 
   useEffect(() => {
@@ -420,12 +492,19 @@ function Workspace() {
           Open
         </button>
 
+        {/* Amber whenever the graph has fallen behind disk, tying the button to
+            the change count in the readouts on the far right. */}
         <button
           onClick={scan}
           disabled={!projectPath || scanning}
-          className="border border-bp-accent/60 bg-bp-accent/10 px-2.5 py-1 text-[10px] tracking-widest text-bp-accent uppercase transition-colors hover:bg-bp-accent/20 disabled:cursor-not-allowed disabled:border-bp-rule disabled:bg-transparent disabled:text-bp-muted/40"
+          title={freshness && stale > 0 ? describeChanges(freshness) : undefined}
+          className={`px-2.5 py-1 text-[10px] tracking-widest uppercase transition-colors disabled:cursor-not-allowed disabled:border-bp-rule disabled:bg-transparent disabled:text-bp-muted/40 ${
+            stale > 0
+              ? "border border-amber-500/60 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+              : "border border-bp-accent/60 bg-bp-accent/10 text-bp-accent hover:bg-bp-accent/20"
+          }`}
         >
-          {scanning ? "Scanning" : cachedAt ? "Rescan" : "Scan"}
+          {scanning ? "Scanning" : scannedAt ? "Rescan" : "Scan"}
         </button>
 
         <span className="flex border border-bp-rule">
@@ -473,7 +552,15 @@ function Workspace() {
                 <Readout label="imports" value={graph.edges.length} />
               </>
             )}
-            <Readout label="scan" value={cachedAt ? describeAge(cachedAt) : "live"} />
+            <Readout label="scan" value={scannedAt ? describeAge(scannedAt) : "live"} />
+            {freshness && stale > 0 && (
+              <Readout
+                label="changed"
+                value={stale}
+                warn
+                title={`${describeChanges(freshness)} — rescan to bring the graph up to date`}
+              />
+            )}
           </span>
         )}
       </header>

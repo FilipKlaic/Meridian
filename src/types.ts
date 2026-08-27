@@ -5,6 +5,23 @@ export type ProjectGraph = {
   /** Absent on scans cached before function analysis existed. */
   symbols?: Symbol[];
   calls?: Call[];
+  /** Absent on scans cached before staleness checking existed. */
+  fingerprint?: FileStamp[];
+};
+
+/** The state of one file at scan time, enough to notice it changed later. */
+export type FileStamp = {
+  id: string;
+  /** Milliseconds since the Unix epoch. */
+  modified: number;
+  size: number;
+};
+
+/** What has changed on disk since a cached scan was taken. */
+export type Freshness = {
+  added: number;
+  removed: number;
+  modified: number;
 };
 
 export type SymbolKind = "function" | "method" | "class";

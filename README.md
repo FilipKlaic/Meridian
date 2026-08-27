@@ -20,7 +20,8 @@ Built with [Tauri](https://tauri.app) (Rust backend, WebView frontend), parsing 
   to the same line in VS Code.
 - **Focus mode** — hovering a node dims everything it does not touch.
 - **Scan cache** — results are stored in SQLite per project path, so reopening a
-  project draws immediately instead of rescanning.
+  project draws immediately instead of rescanning. The header says how many files have
+  changed since, so a stale graph never passes for a current one.
 
 Edges follow the lanes dagre reserves for them, so lines route around boxes rather than
 through them, and labels drop away as you zoom out instead of turning into mush.
@@ -91,9 +92,19 @@ Expect a healthy proportion of guesses on class-heavy or dependency-injected cod
 that becomes limiting, the fix is a resolver backed by the TypeScript compiler API; the
 graph shape would not change.
 
-**Freshness.** A cached scan is not invalidated when files change on disk — hit
-**Rescan** after editing. The source viewer is the exception: it re-reads and re-parses
-the file every time, so the code you see is always current even when the graph is not.
+**Freshness.** A scan records the size and modification time of every file it read,
+including the `tsconfig.json` files, since editing an alias moves edges just as much as
+editing an import. Opening a project compares those against disk, and so does regaining
+window focus — coming back from your editor is when the graph is most likely to be
+wrong. The count appears in the header and the Rescan button turns amber to match.
+
+Each file is compared against its own recorded state rather than against the moment of
+the scan, so cloning a repository does not declare an untouched tree stale. Two things
+this does not do: rescanning is still yours to trigger, and a file edited back to
+identical content still counts as changed, because only its timestamp is consulted.
+
+The source viewer is exempt — it re-reads and re-parses on every open, so the code you
+see is current even when the graph around it is not.
 
 TypeScript and TSX only, for now.
 

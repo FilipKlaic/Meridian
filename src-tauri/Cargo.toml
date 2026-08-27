@@ -29,5 +29,6 @@ tree-sitter-typescript = "0.23.2"
 ignore = "0.4.33"
 
 [dev-dependencies]
+filetime = "0.2.29"
 tempfile = "3.27.0"
 

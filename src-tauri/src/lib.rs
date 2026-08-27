@@ -25,6 +25,21 @@ async fn read_source(
     .map_err(|e| format!("read task failed: {e}"))?
 }
 
+/// How far a cached scan has drifted from what is on disk.
+#[tauri::command]
+async fn check_freshness(
+    path: String,
+    fingerprint: Vec<scanner::FileStamp>,
+) -> Result<scanner::Freshness, String> {
+    // Only stats the tree — no parsing — but it still walks it, so keep it off
+    // the main thread like the scan itself.
+    tauri::async_runtime::spawn_blocking(move || {
+        scanner::compare(&PathBuf::from(path), &fingerprint)
+    })
+    .await
+    .map_err(|e| format!("freshness task failed: {e}"))?
+}
+
 #[tauri::command]
 async fn scan_project(path: String) -> Result<ProjectGraph, String> {
     // Walking and parsing a large tree blocks for a while; keep it off the main thread.
@@ -65,7 +80,11 @@ pub fn run() {
                 .add_migrations(DB_URL, migrations())
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![scan_project, read_source])
+        .invoke_handler(tauri::generate_handler![
+            scan_project,
+            read_source,
+            check_freshness
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
