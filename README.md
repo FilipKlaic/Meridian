@@ -6,6 +6,8 @@ A desktop app for looking at how a TypeScript codebase fits together. Point it a
 project folder and it charts which files import which, which functions call which, and
 shows you the source behind any of it — without leaving the app.
 
+![Meridian charting a React project's imports, file inspector on the left, graph on drafting paper](docs/imports.png)
+
 Built with [Tauri](https://tauri.app) (Rust backend, WebView frontend), parsing with
 [tree-sitter](https://tree-sitter.github.io), rendering with
 [React Flow](https://reactflow.dev) and [dagre](https://github.com/dagrejs/dagre).
@@ -25,6 +27,8 @@ Built with [Tauri](https://tauri.app) (Rust backend, WebView frontend), parsing 
 
 Edges follow the lanes dagre reserves for them, so lines route around boxes rather than
 through them, and labels drop away as you zoom out instead of turning into mush.
+
+![The same project with App.tsx selected: unrelated files dimmed, its source open on the right](docs/source.png)
 
 ## Running it
 
