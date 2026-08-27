@@ -6,6 +6,7 @@ use serde::Serialize;
 use tree_sitter::{Node as TsNode, Parser, Tree};
 
 use crate::symbols::{self, Call, CallContext, FileSymbols, Symbol};
+use crate::tsconfig;
 
 #[derive(Debug, Serialize)]
 pub struct GraphNode {
@@ -54,10 +55,14 @@ pub fn scan(root: &Path) -> Result<ProjectGraph, String> {
         return Err(format!("{} is not a directory", root.display()));
     }
 
-    let files = collect_source_files(&root);
+    let Walk { files, configs } = collect_files(&root);
 
     // Every file we know about, so imports can only resolve to real project files.
     let known: HashSet<PathBuf> = files.iter().cloned().collect();
+    let resolver = Resolver {
+        known: &known,
+        configs: tsconfig::load_all(&configs),
+    };
 
     let mut nodes = Vec::with_capacity(files.len());
     let mut ids: HashMap<PathBuf, String> = HashMap::with_capacity(files.len());
@@ -111,12 +116,7 @@ pub fn scan(root: &Path) -> Result<ProjectGraph, String> {
         let dir = path.parent().unwrap_or(&root);
 
         for specifier in specifiers {
-            // Stage 1 resolves project-internal relative imports only; bare package
-            // specifiers like `react` are intentionally dropped.
-            if !is_relative(&specifier) {
-                continue;
-            }
-            let Some(target) = resolve(dir, &specifier, &known) else {
+            let Some(target) = resolver.resolve(dir, &specifier) else {
                 continue;
             };
             let Some(target_id) = ids.get(&target) else {
@@ -135,7 +135,7 @@ pub fn scan(root: &Path) -> Result<ProjectGraph, String> {
         }
     }
 
-    let (symbols, calls) = analyse_calls(&root, &parsed, &ids, &known);
+    let (symbols, calls) = analyse_calls(&root, &parsed, &ids, &resolver);
 
     Ok(ProjectGraph {
         nodes,
@@ -152,7 +152,7 @@ fn analyse_calls(
     root: &Path,
     parsed: &[(PathBuf, String, Tree)],
     ids: &HashMap<PathBuf, String>,
-    known: &HashSet<PathBuf>,
+    resolver: &Resolver,
 ) -> (Vec<Symbol>, Vec<Call>) {
     let mut per_file: HashMap<String, FileSymbols> = HashMap::new();
     for (path, source, tree) in parsed {
@@ -198,12 +198,8 @@ fn analyse_calls(
 
         // Reuse the very same specifier resolution the import graph is built
         // from, so a call can never bind to a file an import would not.
-        let resolve_specifier = |specifier: &str| -> Option<String> {
-            if !is_relative(specifier) {
-                return None;
-            }
-            ids.get(&resolve(dir, specifier, known)?).cloned()
-        };
+        let resolve_specifier =
+            |specifier: &str| -> Option<String> { ids.get(&resolver.resolve(dir, specifier)?).cloned() };
         let imports =
             symbols::collect_imported_names(tree.root_node(), source.as_bytes(), &resolve_specifier);
 
@@ -230,8 +226,21 @@ fn analyse_calls(
     (all_symbols, calls)
 }
 
-fn collect_source_files(root: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = WalkBuilder::new(root)
+/// What one pass over the project tree turns up.
+struct Walk {
+    /// Source files, which become nodes.
+    files: Vec<PathBuf>,
+    /// `tsconfig.json` files, which say how imports resolve.
+    configs: Vec<PathBuf>,
+}
+
+fn collect_files(root: &Path) -> Walk {
+    let mut walk = Walk {
+        files: Vec::new(),
+        configs: Vec::new(),
+    };
+
+    let entries = WalkBuilder::new(root)
         .hidden(true)
         .git_ignore(true)
         .git_global(true)
@@ -244,15 +253,53 @@ fn collect_source_files(root: &Path) -> Vec<PathBuf> {
         .build()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
-        .map(|entry| entry.into_path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| SOURCE_EXTENSIONS.contains(&e))
-        })
-        .collect();
-    files.sort();
-    files
+        .map(|entry| entry.into_path());
+
+    for path in entries {
+        if path.file_name().is_some_and(|name| name == "tsconfig.json") {
+            walk.configs.push(path);
+            continue;
+        }
+        let is_source = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| SOURCE_EXTENSIONS.contains(&e));
+        if is_source {
+            walk.files.push(path);
+        }
+    }
+
+    walk.files.sort();
+    walk.configs.sort();
+    walk
+}
+
+/// Turns an import specifier into one of the files we walked.
+struct Resolver<'a> {
+    known: &'a HashSet<PathBuf>,
+    /// Nearest-first, so the config governing a file is the first one that
+    /// contains it.
+    configs: Vec<tsconfig::Config>,
+}
+
+impl Resolver<'_> {
+    /// Resolve a specifier written in `dir`, or `None` when it names something
+    /// outside the project — a package, or a file we did not walk.
+    fn resolve(&self, dir: &Path, specifier: &str) -> Option<PathBuf> {
+        if is_relative(specifier) {
+            return probe(&dir.join(specifier), self.known);
+        }
+        // A bare specifier is a package unless a tsconfig maps it into the project.
+        let config = self.config_for(dir)?;
+        config
+            .candidates(specifier)
+            .iter()
+            .find_map(|candidate| probe(candidate, self.known))
+    }
+
+    fn config_for(&self, dir: &Path) -> Option<&tsconfig::Config> {
+        self.configs.iter().find(|config| dir.starts_with(&config.dir))
+    }
 }
 
 fn relative_id(root: &Path, path: &Path) -> String {
@@ -266,10 +313,10 @@ fn is_relative(specifier: &str) -> bool {
     specifier.starts_with("./") || specifier.starts_with("../")
 }
 
-/// Resolve a relative import specifier to a file we actually walked, mirroring the
-/// subset of Node/TS resolution that plain relative imports need.
-fn resolve(dir: &Path, specifier: &str, known: &HashSet<PathBuf>) -> Option<PathBuf> {
-    let base = normalize(&dir.join(specifier));
+/// Given the path an import points at, extension and all or neither, find the file
+/// we actually walked — mirroring the subset of Node/TS resolution that matters.
+fn probe(base: &Path, known: &HashSet<PathBuf>) -> Option<PathBuf> {
+    let base = normalize(base);
 
     // Specifier written with its extension, e.g. `./foo.ts`.
     if known.contains(&base) {
@@ -598,6 +645,149 @@ mod tests {
                 ("src/a.ts", "src/globals.d.ts"),
             ])
         );
+    }
+
+    #[test]
+    fn resolves_tsconfig_path_aliases() {
+        let (graph, _dir) = scan_fixture(&[
+            (
+                "tsconfig.json",
+                r#"{
+                    "compilerOptions": {
+                        "baseUrl": ".",
+                        // The shape Vite scaffolds.
+                        "paths": { "@/*": ["src/*"], "~config": ["src/settings.ts"], },
+                    },
+                }"#,
+            ),
+            (
+                "src/app.ts",
+                r#"
+                import { helper } from "@/util/helper";
+                import { Widget } from "@/widget";
+                import settings from "~config";
+                import React from "react";
+                "#,
+            ),
+            ("src/util/helper.ts", ""),
+            ("src/widget/index.tsx", ""),
+            ("src/settings.ts", ""),
+        ]);
+        assert_eq!(
+            edge_pairs(&graph),
+            BTreeSet::from([
+                ("src/app.ts", "src/util/helper.ts"),
+                ("src/app.ts", "src/widget/index.tsx"),
+                ("src/app.ts", "src/settings.ts"),
+            ])
+        );
+    }
+
+    #[test]
+    fn resolves_bare_specifiers_against_base_url_alone() {
+        let (graph, _dir) = scan_fixture(&[
+            ("tsconfig.json", r#"{ "compilerOptions": { "baseUrl": "src" } }"#),
+            ("src/app.ts", r#"import { helper } from "util/helper";"#),
+            ("src/util/helper.ts", ""),
+        ]);
+        assert_eq!(
+            edge_pairs(&graph),
+            BTreeSet::from([("src/app.ts", "src/util/helper.ts")])
+        );
+    }
+
+    #[test]
+    fn follows_extends_and_project_references() {
+        let (graph, _dir) = scan_fixture(&[
+            (
+                "tsconfig.json",
+                r#"{ "files": [], "references": [{ "path": "./tsconfig.app.json" }] }"#,
+            ),
+            (
+                "tsconfig.app.json",
+                r#"{ "extends": "./tsconfig.base.json", "include": ["src"] }"#,
+            ),
+            (
+                "tsconfig.base.json",
+                r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+            ),
+            ("src/app.ts", r#"import { helper } from "@/helper";"#),
+            ("src/helper.ts", ""),
+        ]);
+        assert_eq!(
+            edge_pairs(&graph),
+            BTreeSet::from([("src/app.ts", "src/helper.ts")])
+        );
+    }
+
+    #[test]
+    fn each_package_uses_its_nearest_tsconfig() {
+        // Both packages alias `@/*`, and they must not bleed into each other.
+        let (graph, _dir) = scan_fixture(&[
+            (
+                "packages/a/tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            (
+                "packages/b/tsconfig.json",
+                r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#,
+            ),
+            ("packages/a/src/app.ts", r#"import { thing } from "@/thing";"#),
+            ("packages/a/src/thing.ts", ""),
+            ("packages/b/src/thing.ts", ""),
+        ]);
+        assert_eq!(
+            edge_pairs(&graph),
+            BTreeSet::from([("packages/a/src/app.ts", "packages/a/src/thing.ts")])
+        );
+    }
+
+    #[test]
+    fn resolves_calls_through_an_aliased_import() {
+        // The call graph has to agree with the import graph about where a
+        // specifier points, or an aliased project draws no call edges at all.
+        let (graph, _dir) = scan_fixture(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+            ),
+            (
+                "src/app.ts",
+                r#"
+                import { fetchUser } from "@/api";
+                export function run() { fetchUser(); }
+                "#,
+            ),
+            ("src/api.ts", "export function fetchUser() {}"),
+        ]);
+        let calls: BTreeSet<(&str, &str)> = graph
+            .calls
+            .iter()
+            .map(|c| (c.source.as_str(), c.target.as_str()))
+            .collect();
+        assert_eq!(
+            calls,
+            BTreeSet::from([("src/app.ts#run", "src/api.ts#fetchUser")])
+        );
+    }
+
+    #[test]
+    fn still_drops_bare_packages_when_no_alias_matches() {
+        let (graph, _dir) = scan_fixture(&[
+            (
+                "tsconfig.json",
+                r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }"#,
+            ),
+            (
+                "src/app.ts",
+                r#"import React from "react";
+                   import { z } from "zod";"#,
+            ),
+            ("src/react.ts", ""),
+        ]);
+        // `src/react.ts` exists, but `baseUrl` is the project root, so `react`
+        // resolves to a package rather than to that file.
+        assert!(graph.edges.is_empty(), "{:?}", graph.edges);
     }
 
     #[test]

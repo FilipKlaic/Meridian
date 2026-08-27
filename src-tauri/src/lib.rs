@@ -1,6 +1,7 @@
 pub mod scanner;
 pub mod source;
 pub mod symbols;
+pub mod tsconfig;
 
 use std::path::PathBuf;
 

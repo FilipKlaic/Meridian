@@ -63,10 +63,15 @@ picture reads exactly like a complete one. So the limits are worth stating plain
 calls. Specifiers are resolved the way Node and TypeScript resolve them — extension
 inference, `index` files, and NodeNext-style `./foo.js` meaning `./foo.ts`.
 
-- Bare package imports (`react`, `lodash`) are deliberately skipped; only files inside
-  the project become nodes.
-- **`tsconfig.json` path aliases are not resolved.** A project importing `@/components`
-  will show far fewer edges than it really has.
+`compilerOptions.baseUrl` and `compilerOptions.paths` are honoured, so `@/components`
+resolves like it does in your editor. Each file uses its nearest `tsconfig.json`, which
+keeps a monorepo's packages from bleeding into each other, and `extends` and
+`references` are followed so aliases declared in a `tsconfig.app.json` still count.
+
+- Bare package imports (`react`, `lodash`) are skipped unless an alias maps them into
+  the project; only files inside the project become nodes.
+- An `extends` naming a package (`@tsconfig/strictest`) is not followed — it lives in
+  `node_modules`, which a scan never walks. Relative and absolute ones are.
 - Dynamic `import()` is not counted.
 
 **Calls.** tree-sitter provides syntax, not types, so a call is resolved by name:
@@ -113,6 +118,7 @@ src/                    React frontend
   SourceDrawer.tsx      the source viewer
 src-tauri/src/          Rust backend
   scanner.rs            walking, import extraction and resolution
+  tsconfig.rs           baseUrl and paths, for non-relative specifiers
   symbols.rs            declarations and call resolution
   source.rs             reading a declaration back off disk
 ```
