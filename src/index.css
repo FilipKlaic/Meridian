@@ -84,6 +84,26 @@ body {
     0 6px 16px -10px rgba(74, 63, 46, 0.55);
 }
 
+/*
+ * The directory colour, carried where it can actually be read. As a 1px border
+ * it was invisible at a glance, which made "files are coloured by directory"
+ * a claim the picture never quite delivered. A bar survives every zoom band
+ * and costs nothing at a few thousand nodes.
+ */
+.bp-node::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--edge);
+  pointer-events: none;
+}
+
+/* Outside the focused file the bar identifies the owner without competing. */
+.bp-node.is-external::before {
+  opacity: 0.45;
+}
+
 /* Corner ticks: the detail that reads as "technical drawing". */
 .bp-corner {
   position: absolute;
@@ -129,6 +149,9 @@ body {
 .lod-far .bp-corner {
   display: none;
 }
+.lod-far .bp-node::before {
+  display: none;
+}
 .lod-far .bp-node {
   background: var(--edge);
   box-shadow: none;
@@ -168,13 +191,15 @@ body {
 .react-flow__edge {
   transition: opacity 140ms ease;
 }
-/* Held higher than the dark theme's: on a light ground, fading toward the paper
-   erases a node far faster than fading toward black did. */
+/* Held well above the dark theme's: fading toward paper erases a node far
+   faster than fading toward black did, and at 0.22 a dimmed file name was no
+   longer readable. Focus mode is meant to push context back, not delete it —
+   the clay highlight carries the emphasis. */
 .react-flow__node.is-dimmed {
-  opacity: 0.22;
+  opacity: 0.35;
 }
 .react-flow__edge.is-dimmed {
-  opacity: 0.13;
+  opacity: 0.2;
 }
 
 /* Thin, unobtrusive scrollbars for the side panels. */
