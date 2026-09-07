@@ -15,6 +15,7 @@ export type PaletteAction = {
 
 type Item =
   | { kind: "file"; key: string; text: string; label: string; directory: string; id: string }
+  | { kind: "symbol"; key: string; text: string; label: string; file: string; id: string }
   | { kind: "action"; key: string; text: string; action: PaletteAction };
 
 export default function CommandPalette({
@@ -23,12 +24,14 @@ export default function CommandPalette({
   index,
   actions,
   onSelectFile,
+  onSelectSymbol,
 }: {
   open: boolean;
   onClose: () => void;
   index: GraphIndex;
   actions: PaletteAction[];
   onSelectFile: (id: string) => void;
+  onSelectSymbol: (id: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -51,8 +54,20 @@ export default function CommandPalette({
         directory: entry.directory,
         id: entry.id,
       })),
+      // Symbol ids are `file#name`, so one query reaches both halves: `authreq`
+      // finds `src/auth.ts#requireUser` through the path, `requireuser` through
+      // the name — and the ranker's after-the-last-slash bonus already favours
+      // the name, which is what someone typing a function name meant.
+      ...index.symbols.map((symbol) => ({
+        kind: "symbol" as const,
+        key: `symbol:${symbol.id}`,
+        text: symbol.id,
+        label: symbol.label,
+        file: symbol.file,
+        id: symbol.id,
+      })),
     ],
-    [actions, index.entries],
+    [actions, index.entries, index.symbols],
   );
 
   const results = useMemo(() => rank(query, items, (item) => item.text).slice(0, 60), [query, items]);
@@ -78,6 +93,8 @@ export default function CommandPalette({
     if (item.kind === "action") {
       if (item.action.disabled) return;
       item.action.run();
+    } else if (item.kind === "symbol") {
+      onSelectSymbol(item.id);
     } else {
       onSelectFile(item.id);
     }
@@ -115,7 +132,7 @@ export default function CommandPalette({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Jump to a file, or run a command…"
+          placeholder="Jump to a file or function, or run a command…"
           spellCheck={false}
           className="shrink-0 border-b border-bp-rule bg-transparent px-3.5 py-3 font-mono text-[12px] text-bp-text placeholder:text-bp-faint focus:outline-none"
         />
@@ -143,6 +160,21 @@ export default function CommandPalette({
                       className="size-1.5 shrink-0"
                       style={{ background: directoryColor(item.id) }}
                     />
+                    <span className="truncate text-bp-text">{item.label}</span>
+                    <span className="ml-auto shrink-0 truncate text-[9px] text-bp-faint">
+                      <Highlight text={item.text} positions={match.positions} />
+                    </span>
+                  </>
+                ) : item.kind === "symbol" ? (
+                  <>
+                    {/* A glyph rather than a dot, so a function never reads as a
+                        file at a glance; the dot's colour still names the owner. */}
+                    <span
+                      className="w-1.5 shrink-0 text-center text-[10px] italic"
+                      style={{ color: directoryColor(item.file) }}
+                    >
+                      f
+                    </span>
                     <span className="truncate text-bp-text">{item.label}</span>
                     <span className="ml-auto shrink-0 truncate text-[9px] text-bp-faint">
                       <Highlight text={item.text} positions={match.positions} />

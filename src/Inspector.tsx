@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 
 import Highlight from "./Highlight";
 import { rank } from "./fuzzy";
-import type { FileEntry, GraphIndex } from "./graphIndex";
+import type { FileEntry, GraphIndex, SymbolEntry } from "./graphIndex";
 import { directoryColor } from "./layout";
 
 function Dot({ id }: { id: string }) {
@@ -40,14 +40,53 @@ function RelatedRow({
   );
 }
 
+/**
+ * A declaration in the selected file. Clicking one is the shortest route to the
+ * question the call graph exists to answer — what does this one function touch —
+ * so the counts either side of it are shown up front: callers, then callees.
+ */
+function SymbolRow({
+  symbol,
+  active,
+  onSelect,
+}: {
+  symbol: SymbolEntry;
+  active: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(symbol.id)}
+      title={`${symbol.id} — ${symbol.calledBy.length} in, ${symbol.calls.length} out`}
+      className={`flex w-full items-center gap-2 px-3 py-1 text-left text-[11px] transition-colors hover:bg-bp-hover ${
+        active ? "bg-bp-hover text-bp-accent" : "text-bp-muted hover:text-bp-text"
+      }`}
+    >
+      <span className="w-1.5 shrink-0 text-center text-[10px] italic text-bp-faint">f</span>
+      <span className="truncate">{symbol.label}</span>
+      {symbol.exported && (
+        <span className="shrink-0 text-[8px] tracking-widest text-bp-accent">EX</span>
+      )}
+      <span className="tabular ml-auto shrink-0 text-[9px] text-bp-faint">
+        {symbol.calledBy.length}/{symbol.calls.length}
+      </span>
+    </button>
+  );
+}
+
 export default function Inspector({
   index,
   selectedId,
+  anchoredSymbol,
   onSelect,
+  onSelectSymbol,
 }: {
   index: GraphIndex;
   selectedId: string | null;
+  /** Id of the symbol the call graph is anchored on, if it is anchored on one. */
+  anchoredSymbol: string | null;
   onSelect: (id: string) => void;
+  onSelectSymbol: (id: string) => void;
 }) {
   const [query, setQuery] = useState("");
 
@@ -60,6 +99,7 @@ export default function Inspector({
   // list is what the user is actually reading.
   const filtering = query.trim().length > 0;
   const selected = selectedId ? (index.byId.get(selectedId) ?? null) : null;
+  const declared = selectedId ? (index.symbolsByFile.get(selectedId) ?? []) : [];
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-bp-rule bg-bp-void">
@@ -127,6 +167,22 @@ export default function Inspector({
               {selected.directory || "/"}
             </p>
           </div>
+
+          <SectionTitle>Declares · {declared.length}</SectionTitle>
+          {declared.length === 0 ? (
+            <p className="px-3 pb-1 text-[10px] text-bp-faint">
+              {index.symbols.length === 0 ? "Rescan to chart functions." : "Nothing."}
+            </p>
+          ) : (
+            declared.map((symbol) => (
+              <SymbolRow
+                key={symbol.id}
+                symbol={symbol}
+                active={symbol.id === anchoredSymbol}
+                onSelect={onSelectSymbol}
+              />
+            ))
+          )}
 
           <SectionTitle>Imports · {selected.imports.length}</SectionTitle>
           {selected.imports.length === 0 ? (

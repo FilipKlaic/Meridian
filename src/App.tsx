@@ -27,7 +27,7 @@ import Inspector from "./Inspector";
 import RoutedEdge from "./RoutedEdge";
 import SourceDrawer, { type SourceTarget } from "./SourceDrawer";
 import SymbolNode from "./SymbolNode";
-import { EMPTY_CALL_VIEW, toCallView } from "./callLayout";
+import { EMPTY_CALL_VIEW, toCallView, type CallAnchor } from "./callLayout";
 import { loadCachedScan, loadLastProject, saveLastProject, saveScan } from "./db";
 import { buildIndex } from "./graphIndex";
 import { DEFAULT_HUE, hueInk, toFlowGraph } from "./layout";
@@ -87,6 +87,11 @@ function Readout({
   );
 }
 
+/** Trim a declaration name to something that fits beside the other readouts. */
+function briefly(name: string): string {
+  return name.length > 24 ? `${name.slice(0, 23)}…` : name;
+}
+
 function TabButton({
   active,
   onClick,
@@ -122,8 +127,10 @@ function Workspace() {
   const [scannedAt, setScannedAt] = useState<string | null>(null);
   /** How far the graph on screen has drifted from disk, once we have checked. */
   const [freshness, setFreshness] = useState<Freshness | null>(null);
-  /** Sticky selection, from a click in the graph, the inspector, or the palette. */
+  /** Sticky file selection, from a click in the graph, the inspector, or the palette. */
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** What the call view is built around: the selected file, or one function in it. */
+  const [callAnchor, setCallAnchor] = useState<CallAnchor | null>(null);
   /** Transient, from the pointer being over a node in the graph. */
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("imports");
@@ -168,6 +175,7 @@ function Workspace() {
     setNodes(laidOut.nodes);
     setEdges(laidOut.edges);
     setSelectedId(null);
+    setCallAnchor(null);
     setHoverId(null);
     if (laidOut.nodes.length > 0) setFitRequest((request) => request + 1);
   }, [graph, setNodes, setEdges]);
@@ -185,24 +193,29 @@ function Workspace() {
   const index = useMemo(() => buildIndex(graph), [graph]);
 
   /**
-   * The call graph is always anchored to one file. Whole-project function graphs
-   * run to thousands of nodes and read as noise, so stepping outward is done by
-   * focusing a neighbour rather than widening the radius.
+   * The call graph is always anchored — to a file, or to a single function.
+   * Whole-project function graphs run to thousands of nodes and read as noise,
+   * so stepping outward is done by re-anchoring on a neighbour rather than
+   * widening the radius.
    */
   const callView = useMemo(
-    () => (tab === "calls" ? toCallView(graph?.symbols ?? [], graph?.calls ?? [], selectedId) : EMPTY_CALL_VIEW),
-    [tab, graph, selectedId],
+    () => (tab === "calls" ? toCallView(graph?.symbols ?? [], graph?.calls ?? [], callAnchor) : EMPTY_CALL_VIEW),
+    [tab, graph, callAnchor],
   );
 
   const showingCalls = tab === "calls";
+  /** The anchored function, when the call view is built around one. */
+  const anchoredSymbol =
+    callAnchor?.kind === "symbol" ? (index.symbolsById.get(callAnchor.id) ?? null) : null;
 
   /** Files that have changed since the graph was taken; 0 when fresh or unknown. */
   const stale = freshness ? freshness.added + freshness.removed + freshness.modified : 0;
 
   /**
    * Hover wins over selection, so pointing at the graph always answers first.
-   * In the call view the selection is the *anchor file*, not a node on screen,
-   * so only hover can focus there.
+   * The call view deliberately has no resting focus: everything on it already
+   * touches the anchor, so highlighting all of it would say nothing. The anchor
+   * itself is marked by its selected styling instead.
    */
   const focusId = showingCalls ? hoverId : (hoverId ?? selectedId);
 
@@ -285,15 +298,25 @@ function Workspace() {
   }, [tab, callView]);
 
   /**
+   * Pick a file, or clear the pick. Selection and the call anchor move together:
+   * they are two views of one choice, and letting them drift apart is what makes
+   * the Calls tab open on a graph of whatever the user was looking at before.
+   */
+  const selectFile = useCallback((id: string | null) => {
+    setSelectedId(id);
+    setCallAnchor(id ? { kind: "file", id } : null);
+  }, []);
+
+  /**
    * Select a file and bring it into view. The centring has to wait for the
    * selection render to commit: panning in the same tick as a state update gets
    * cancelled, because the re-render syncs the pre-animation viewport back into
    * the pan/zoom handler and kills the transition in flight.
    */
   const revealFile = useCallback((id: string) => {
-    setSelectedId(id);
+    selectFile(id);
     setRevealRequest((previous) => ({ id, nonce: (previous?.nonce ?? 0) + 1 }));
-  }, []);
+  }, [selectFile]);
 
   useEffect(() => {
     if (!revealRequest) return;
@@ -426,6 +449,44 @@ function Workspace() {
     [pathOf],
   );
 
+  /**
+   * Chart one function on its own: its callers on the left, what it calls on the
+   * right, each labelled with the file it lives in. Selecting the declaring file
+   * alongside it keeps the inspector pointed at where the function came from,
+   * which is what makes hopping from one to the next legible.
+   */
+  const anchorSymbol = useCallback(
+    (id: string) => {
+      const symbol = index.symbolsById.get(id);
+      if (!symbol) return;
+      setSelectedId(symbol.file);
+      // Re-anchoring on the symbol already anchored would lay the same graph out
+      // again and re-frame it, so clicking the middle of the canvas to re-read
+      // its source would throw away the pan and zoom the user had settled on.
+      setCallAnchor((current) =>
+        current?.kind === "symbol" && current.id === id ? current : { kind: "symbol", id },
+      );
+      setTab("calls");
+    },
+    [index],
+  );
+
+  /** Show a function's source, wherever it lives. */
+  const showSymbolSource = useCallback(
+    (id: string) => {
+      const symbol = index.symbolsById.get(id);
+      const path = symbol && pathOf(symbol.file);
+      if (!symbol || !path) return;
+      setSourceTarget({
+        path,
+        file: symbol.file,
+        name: symbol.name,
+        container: symbol.container,
+      });
+    },
+    [index, pathOf],
+  );
+
   const actions = useMemo<PaletteAction[]>(
     () => [
       { id: "open", label: "Open project…", hint: "⌘O", run: pickFolder },
@@ -470,13 +531,18 @@ function Workspace() {
       } else if (meta && event.key.toLowerCase() === "r") {
         event.preventDefault();
         void scan();
-      } else if (event.key === "Escape" && !paletteOpen) {
-        setSelectedId(null);
+      } else if (event.key === "Escape" && !paletteOpen && !sourceTarget) {
+        // Esc steps back out rather than clearing everything: a function returns
+        // to the file that declares it, so a chain of hops has a way home. An
+        // open reader owns Esc first, so dismissing it never also costs the
+        // anchor the user was reading about.
+        if (anchoredSymbol) selectFile(anchoredSymbol.file);
+        else selectFile(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [pickFolder, scan, paletteOpen]);
+  }, [pickFolder, scan, paletteOpen, sourceTarget, anchoredSymbol, selectFile]);
 
   return (
     <div className="flex h-full flex-col bg-bp-canvas font-mono text-bp-text">
@@ -538,8 +604,22 @@ function Workspace() {
           <span className="flex shrink-0 items-center gap-4 text-[11px]">
             {showingCalls ? (
               <>
-                <Readout label="in file" value={callView.ownCount} />
-                <Readout label="linked" value={callView.neighbourCount} />
+                {anchoredSymbol ? (
+                  <>
+                    <Readout
+                      label="tracing"
+                      value={briefly(anchoredSymbol.label)}
+                      title={anchoredSymbol.id}
+                    />
+                    <Readout label="callers" value={callView.callerCount} />
+                    <Readout label="callees" value={callView.calleeCount} />
+                  </>
+                ) : (
+                  <>
+                    <Readout label="in file" value={callView.ownCount} />
+                    <Readout label="linked" value={callView.neighbourCount} />
+                  </>
+                )}
                 <Readout
                   label="calls"
                   value={
@@ -576,7 +656,16 @@ function Workspace() {
 
       <div className="flex min-h-0 flex-1">
         {inspectorOpen && graph && (
-          <Inspector index={index} selectedId={selectedId} onSelect={revealFile} />
+          <Inspector
+            index={index}
+            selectedId={selectedId}
+            anchoredSymbol={anchoredSymbol?.id ?? null}
+            onSelect={revealFile}
+            onSelectSymbol={(id) => {
+              anchorSymbol(id);
+              showSymbolSource(id);
+            }}
+          />
         )}
 
         <main className="min-h-0 min-w-0 flex-1">
@@ -590,22 +679,17 @@ function Workspace() {
               onNodeMouseLeave={() => setHoverId(null)}
               onNodeClick={(_, node: Node) => {
                 if (!showingCalls) {
-                  setSelectedId(node.id);
+                  selectFile(node.id);
                   showFileSource(node.id);
                   return;
                 }
-                const file = String(node.data?.file ?? "");
-                const path = pathOf(file);
-                if (!path) return;
-                setSourceTarget({
-                  path,
-                  file,
-                  name: String(node.data?.name ?? ""),
-                  container: (node.data?.container as string | null) ?? null,
-                  external: Boolean(node.data?.external),
-                });
+                // Clicking a function makes it the subject: one click per hop is
+                // what turns the call view into something you can walk.
+                const symbolId = String(node.data?.id ?? "");
+                anchorSymbol(symbolId);
+                showSymbolSource(symbolId);
               }}
-              onPaneClick={() => !showingCalls && setSelectedId(null)}
+              onPaneClick={() => !showingCalls && selectFile(null)}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               minZoom={0.05}
@@ -649,9 +733,9 @@ function Workspace() {
                       : showingCalls
                         ? !graph.symbols
                           ? "Rescan needed"
-                          : selectedId
-                            ? "No functions here"
-                            : "No file selected"
+                          : callAnchor
+                            ? "Nothing to chart"
+                            : "Nothing anchored"
                         : "Awaiting scan"}
               </p>
               <p className="max-w-md text-[11px] text-bp-faint">
@@ -662,9 +746,11 @@ function Workspace() {
                     : showingCalls
                       ? !graph.symbols
                         ? "This project was scanned before function analysis existed. Rescan to chart its calls."
-                        : selectedId
-                          ? `${selectedId} declares no functions, methods or classes.`
-                          : "Pick a file in the inspector or with ⌘K to chart the calls into and out of it."
+                        : callAnchor
+                          ? callAnchor.kind === "symbol"
+                            ? `${callAnchor.id} is not in this scan. Rescan to chart it.`
+                            : `${callAnchor.id} declares no functions, methods or classes.`
+                          : "Pick a file or function in the inspector or with ⌘K to chart the calls into and out of it."
                       : "Run a scan to chart this project's imports."}
               </p>
             </div>
@@ -675,8 +761,9 @@ function Workspace() {
           target={sourceTarget}
           onClose={() => setSourceTarget(null)}
           onFocusFile={(file) => {
-            // Re-anchor the call view on this symbol's own file.
-            setSelectedId(file);
+            // Widen the call view from one function back out to its whole file.
+            revealFile(file);
+            setTab("calls");
             setSourceTarget(null);
           }}
         />
@@ -688,6 +775,10 @@ function Workspace() {
         index={index}
         actions={actions}
         onSelectFile={revealFile}
+        onSelectSymbol={(id) => {
+          anchorSymbol(id);
+          showSymbolSource(id);
+        }}
       />
     </div>
   );

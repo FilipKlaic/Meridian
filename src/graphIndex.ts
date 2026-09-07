@@ -1,4 +1,4 @@
-import type { ProjectGraph } from "./types";
+import type { ProjectGraph, SymbolKind } from "./types";
 
 export type FileEntry = {
   id: string;
@@ -12,15 +12,47 @@ export type FileEntry = {
   importedBy: string[];
 };
 
+/** One declaration, with the calls either side of it already gathered. */
+export type SymbolEntry = {
+  /** `src/auth.ts#requireUser`, unique across the project. */
+  id: string;
+  /** Id of the file that declares it. */
+  file: string;
+  /** Bare declaration name, which is what the source reader looks for. */
+  name: string;
+  /** `requireUser`, or `Auth.login` for a method. */
+  label: string;
+  kind: SymbolKind;
+  container: string | null;
+  exported: boolean;
+  line: number;
+  /** Ids of symbols this one calls. */
+  calls: string[];
+  /** Ids of symbols that call this one. */
+  calledBy: string[];
+};
+
 export type GraphIndex = {
   byId: Map<string, FileEntry>;
   /** Every file, ordered by path. */
   entries: FileEntry[];
   /** The same files grouped under their directory, both in path order. */
   directories: { name: string; files: FileEntry[] }[];
+  symbolsById: Map<string, SymbolEntry>;
+  /** Every symbol, ordered by id. Empty for a scan taken before symbols existed. */
+  symbols: SymbolEntry[];
+  /** A file's declarations, in the order they appear in the source. */
+  symbolsByFile: Map<string, SymbolEntry[]>;
 };
 
-export const EMPTY_INDEX: GraphIndex = { byId: new Map(), entries: [], directories: [] };
+export const EMPTY_INDEX: GraphIndex = {
+  byId: new Map(),
+  entries: [],
+  directories: [],
+  symbolsById: new Map(),
+  symbols: [],
+  symbolsByFile: new Map(),
+};
 
 function directoryOf(id: string): string {
   const slash = id.lastIndexOf("/");
@@ -69,5 +101,39 @@ export function buildIndex(graph: ProjectGraph | null): GraphIndex {
     .map(([name, files]) => ({ name, files }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return { byId, entries, directories };
+  const symbolsById = new Map<string, SymbolEntry>();
+  for (const symbol of graph.symbols ?? []) {
+    symbolsById.set(symbol.id, {
+      id: symbol.id,
+      file: symbol.file,
+      name: symbol.name,
+      label: symbol.container ? `${symbol.container}.${symbol.name}` : symbol.name,
+      kind: symbol.kind,
+      container: symbol.container,
+      exported: symbol.exported,
+      line: symbol.line,
+      calls: [],
+      calledBy: [],
+    });
+  }
+
+  // Both directions, once, for the same reason the file adjacency is built here:
+  // the panels ask "what does this one touch" on every selection, and scanning
+  // the whole call list to answer that does not scale past a few thousand.
+  for (const call of graph.calls ?? []) {
+    symbolsById.get(call.source)?.calls.push(call.target);
+    symbolsById.get(call.target)?.calledBy.push(call.source);
+  }
+
+  const symbols = [...symbolsById.values()].sort((a, b) => a.id.localeCompare(b.id));
+
+  const symbolsByFile = new Map<string, SymbolEntry[]>();
+  // Source order, not the id order above: a file reads top to bottom.
+  for (const symbol of [...symbolsById.values()].sort((a, b) => a.line - b.line)) {
+    const bucket = symbolsByFile.get(symbol.file);
+    if (bucket) bucket.push(symbol);
+    else symbolsByFile.set(symbol.file, [symbol]);
+  }
+
+  return { byId, entries, directories, symbolsById, symbols, symbolsByFile };
 }

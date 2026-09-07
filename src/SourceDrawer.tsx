@@ -12,8 +12,6 @@ export type SourceTarget = {
   name: string | null;
   /** Enclosing class, for a method. */
   container: string | null;
-  /** True when this symbol lives outside the file the call view is anchored on. */
-  external?: boolean;
 };
 
 type SourceView = {
@@ -100,13 +98,15 @@ export default function SourceDrawer({
           </p>
         </div>
 
-        {target.external && (
+        {/* Widen back out: the canvas is anchored on this one function, and its
+            whole file is the next step out that is still worth drawing. */}
+        {target.name && (
           <button
             onClick={() => onFocusFile(target.file)}
-            title="Chart this file's calls"
+            title="Chart this whole file's calls"
             className="shrink-0 border border-bp-rule px-2 py-1 text-[9px] tracking-widest text-bp-muted uppercase transition-colors hover:border-bp-accent hover:text-bp-accent"
           >
-            Focus
+            File
           </button>
         )}
 
